@@ -27,7 +27,23 @@ let inFlight = null;
 
 init();
 
+/** #ask / #code in the URL picks the view, so the back button and reloads work. */
+function showView() {
+  const view = location.hash === '#code' ? 'code' : 'ask';
+  for (const name of ['ask', 'code']) {
+    /** @type {HTMLElement} */ (document.getElementById(`${name}-view`)).hidden = name !== view;
+  }
+  for (const tab of document.querySelectorAll('.tabs a')) {
+    if (/** @type {HTMLElement} */ (tab).dataset.view === view) tab.setAttribute('aria-current', 'page');
+    else tab.removeAttribute('aria-current');
+  }
+  els.newChat.hidden = view !== 'ask';
+}
+
 async function init() {
+  window.addEventListener('hashchange', showView);
+  showView();
+
   for (const text of EXAMPLES) {
     const button = el('button', 'example', text);
     button.type = 'button';

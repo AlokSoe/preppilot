@@ -12,32 +12,87 @@
     <div class="app">
       <header class="topbar">
         <div class="brand"><img src="/favicon.svg" alt="" width="22" height="22" /> PrepPilot</div>
-        <span class="mode">Ask mode</span>
+        <nav class="tabs" aria-label="Mode">
+          <a href="#ask" data-view="ask">Ask</a>
+          <a href="#code" data-view="code">Code</a>
+        </nav>
         <button id="new-chat" class="ghost" type="button">New chat</button>
       </header>
 
-      <main id="log" class="log" role="log">
-        <section id="empty" class="empty">
-          <h1>Ask anything about JavaScript</h1>
-          <p>Answers come from your own notes, with the file and section they came from.</p>
-          <div id="examples" class="examples"></div>
-        </section>
-      </main>
+      <!-- Ask mode -->
+      <section id="ask-view" class="view ask-view">
+        <main id="log" class="log" role="log">
+          <section id="empty" class="empty">
+            <h1>Ask anything about JavaScript</h1>
+            <p>Answers come from your own notes, with the file and section they came from.</p>
+            <div id="examples" class="examples"></div>
+          </section>
+        </main>
 
-      <form id="composer" class="composer">
-        <label for="input" class="visually-hidden">Your question</label>
-        <textarea
-          id="input"
-          rows="1"
-          maxlength="4000"
-          placeholder="Ask about closures, the event loop, an LRU cache…"
-          autocomplete="off"
-        ></textarea>
-        <button id="send" type="submit">Send</button>
-        <button id="stop" type="button" class="danger" hidden>Stop</button>
-      </form>
-      <p class="hint">Enter to send · Shift+Enter for a new line</p>
+        <form id="composer" class="composer">
+          <label for="input" class="visually-hidden">Your question</label>
+          <textarea
+            id="input"
+            rows="1"
+            maxlength="4000"
+            placeholder="Ask about closures, the event loop, an LRU cache…"
+            autocomplete="off"
+          ></textarea>
+          <button id="send" type="submit">Send</button>
+          <button id="stop" type="button" class="danger" hidden>Stop</button>
+        </form>
+        <p class="hint">Enter to send · Shift+Enter for a new line</p>
+      </section>
+
+      <!-- Code mode -->
+      <section id="code-view" class="view code-view" hidden>
+        <form id="generate-form" class="toolbar">
+          <label>Topic <input id="topic" list="topic-list" value="promises" required maxlength="60" /></label>
+          <datalist id="topic-list"></datalist>
+          <label
+            >Difficulty
+            <select id="difficulty">
+              <option>easy</option>
+              <option selected>medium</option>
+              <option>hard</option>
+            </select>
+          </label>
+          <button id="generate" type="submit">New problem</button>
+          <label class="picker"
+            >Saved
+            <select id="problem-picker">
+              <option value="">Choose a problem…</option>
+            </select>
+          </label>
+        </form>
+        <p id="code-status" class="status" role="status"></p>
+
+        <div id="workspace" class="workspace" hidden>
+          <article class="panel">
+            <h2 id="problem-title"></h2>
+            <p id="problem-meta" class="meta"></p>
+            <div id="problem-statement" class="markdown"></div>
+            <details>
+              <summary>Visible tests</summary>
+              <div id="visible-tests"></div>
+            </details>
+          </article>
+
+          <div class="panel">
+            <label for="editor" class="visually-hidden">Your solution</label>
+            <textarea id="editor" class="editor" spellcheck="false" autocapitalize="off" autocomplete="off"></textarea>
+            <div class="actions">
+              <button id="reset" type="button" class="ghost">Reset</button>
+              <button id="run" type="button" class="ghost">Run visible tests</button>
+              <button id="submit" type="button">Submit</button>
+            </div>
+            <div id="results" class="results" aria-live="polite"></div>
+            <div id="review" class="markdown review"></div>
+          </div>
+        </div>
+      </section>
     </div>
     <script type="module" src="/app.js"></script>
+    <script type="module" src="/code.js"></script>
   </body>
 </html>

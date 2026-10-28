@@ -11,6 +11,11 @@ function resolvePath(p) {
   return path.resolve(ROOT, p);
 }
 
+/** SQLite file. `DATABASE_PATH` overrides; default is ./data/preppilot.db in the project. */
+export function databasePath() {
+  return process.env.DATABASE_PATH ? resolvePath(process.env.DATABASE_PATH) : path.join(ROOT, 'data', 'preppilot.db');
+}
+
 /**
  * Knowledge-base folders to index.
  * `PREPPILOT_SOURCES` (comma-separated) overrides `preppilot.config.json`.

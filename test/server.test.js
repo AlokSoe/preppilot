@@ -5,6 +5,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createApp } from '../src/server/app.js';
 import { MemorySessionStore } from '../src/server/sessions.js';
+import { CodeRunner } from '../src/runner/runner.js';
+import { ProblemStore } from '../src/problems/store.js';
+import { openDatabase } from '../src/db/database.js';
 import { AbortedError, InvalidKeyError } from '../src/llm/provider.js';
 import { readSse } from '../web/sse.js';
 
@@ -37,7 +40,15 @@ let server;
 let baseUrl;
 
 before(async () => {
-  const handler = createApp({ kb, provider, sessions: new MemorySessionStore(), staticDir: WEB_DIR, log: () => {} });
+  const handler = createApp({
+    kb,
+    provider,
+    sessions: new MemorySessionStore(),
+    runner: new CodeRunner(),
+    problems: new ProblemStore(openDatabase(':memory:')),
+    staticDir: WEB_DIR,
+    log: () => {},
+  });
   server = createServer(handler);
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   baseUrl = `http://127.0.0.1:${server.address().port}`;
@@ -185,10 +196,10 @@ test('request validation: bad JSON, wrong content type, empty and too-long messa
     await errorCode(await post(`/api/sessions/${id}/messages`, 'hi', { 'Content-Type': 'text/plain' })),
     [415, 'unsupported_media_type'],
   );
-  assert.deepEqual(await errorCode(await post(`/api/sessions/${id}/messages`, { text: '  ' })), [400, 'empty_message']);
+  assert.deepEqual(await errorCode(await post(`/api/sessions/${id}/messages`, { text: '  ' })), [400, 'empty_text']);
   assert.deepEqual(
     await errorCode(await post(`/api/sessions/${id}/messages`, { text: 'x'.repeat(4001) })),
-    [400, 'message_too_long'],
+    [400, 'text_too_long'],
   );
   assert.deepEqual(await errorCode(await post('/api/sessions/nope/messages', { text: 'hi' })), [404, 'session_not_found']);
   assert.deepEqual(await errorCode(await post('/api/sessions', 'x'.repeat(70_000))), [413, 'payload_too_large']);

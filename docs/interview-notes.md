@@ -163,3 +163,58 @@ a fake model.
 > value, so the turn was thrown away and the agent received `undefined`. Fix: `return yield* script(args)`.
 > Good generator trivia: `yield*` forwards yielded values automatically, but the return value only
 > if you use it.
+
+---
+
+## M4 — Sandboxed code runner + Code mode
+
+**What I built:** a code runner that executes untrusted JavaScript in a locked-down child process,
+an AI problem generator that verifies every problem before saving it, SQLite storage, a submit flow
+with hidden tests and a streamed AI review, plus Code mode in the web UI and CLI.
+
+### Questions you can expect
+
+**"How do you run untrusted code safely?"**
+> Each run is a separate `node --permission` process. With no `--allow-*` flags, Node 26 blocks the
+> file system, child processes, worker threads, native addons and network — I verified each one
+> with a probe and have tests for them. The child gets an empty environment (no API keys), a 128 MB
+> heap cap, and a wall-clock timeout that SIGKILLs it, so even `while (true) {}` stops. In
+> production it also runs in its own container with no network and a memory limit, because the heap
+> cap doesn't cover Buffers. Defence in depth: no single layer is trusted alone.
+
+**"Why not `vm` or `eval` in the server process?"**
+> Node's docs say `vm` is not a security mechanism, and anything in-process shares memory and the
+> event loop with the server — one infinite loop would freeze every user. A separate process can be
+> killed without affecting anything else.
+
+**"How do results come back — couldn't user code just print 'passed'?"**
+> Results go over a separate pipe, file descriptor 3, as NDJSON. stdout belongs to the user's code
+> and is only shown as console output. I have a test where the code prints a fake "passed" line and
+> still fails.
+
+**"How do you stop heavy code from starving the server?"**
+> A semaphore: at most N runs at once; the rest wait in a FIFO queue. Release hands the slot
+> directly to the next waiter. There's a timing test: 4 runs of 300 ms at concurrency 2 take ≥ 600 ms.
+
+**"How do you trust AI-generated tests?"**
+> I don't — I verify them. The model returns the problem, a reference solution and the tests as
+> structured JSON. Before saving, the reference solution must pass every test, and the empty starter
+> code must fail at least one (otherwise the tests check nothing). If either fails, the model gets
+> the exact test output and fixes its own problem, up to 3 attempts. Verified problems are cached
+> in SQLite and reused, so each one costs tokens once.
+
+**"How do hidden tests stay hidden?"**
+> The public problem view never includes the reference solution or hidden test code. On submit,
+> hidden tests show only their name and pass/fail — their error message could reveal the expected
+> value. The AI reviewer does see everything, with instructions to give hints, not the answer.
+
+### Real bugs I hit
+> 1. **`require` was visible to user code.** Under `node -e`, Node defines `require` as a global.
+>    It couldn't load anything dangerous (the permission model blocks it), but I deleted it from the
+>    sandbox globals anyway — and kept the test.
+> 2. **A wrong assumption in a test:** I expected `net.connect` to throw when the network is
+>    blocked. It actually reports `ERR_ACCESS_DENIED` through the socket's `error` event. Lesson:
+>    probe the real behaviour, don't assume it.
+> 3. **Schema-stripping bug caught in review:** my first `toApiSchema` stripped unsupported keywords
+>    like `minimum` everywhere — including a *property named* `minimum`. Fixed by treating keys
+>    under `properties` as names, not keywords, and added a test.

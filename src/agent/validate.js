@@ -4,7 +4,7 @@
  * Tool inputs stream from the model unvalidated (eager input streaming), so
  * every input is checked here before a tool runs. Supports the subset our
  * tool schemas use: type, properties, required, additionalProperties: false,
- * enum, minimum/maximum, minLength/maxLength, items.
+ * enum, minimum/maximum, minLength/maxLength, items, minItems/maxItems.
  *
  * @param {any} schema
  * @param {unknown} value
@@ -32,8 +32,10 @@ export function validate(schema, value, path = 'input') {
     if (schema.minimum !== undefined && value < schema.minimum) errors.push(`${path} must be >= ${schema.minimum}`);
     if (schema.maximum !== undefined && value > schema.maximum) errors.push(`${path} must be <= ${schema.maximum}`);
   }
-  if (Array.isArray(value) && schema.items) {
-    value.forEach((item, i) => errors.push(...validate(schema.items, item, `${path}[${i}]`)));
+  if (Array.isArray(value)) {
+    if (schema.minItems !== undefined && value.length < schema.minItems) errors.push(`${path} needs at least ${schema.minItems} items`);
+    if (schema.maxItems !== undefined && value.length > schema.maxItems) errors.push(`${path} allows at most ${schema.maxItems} items`);
+    if (schema.items) value.forEach((item, i) => errors.push(...validate(schema.items, item, `${path}[${i}]`)));
   }
   if (schema.type === 'object' && isPlainObject(value)) {
     const properties = schema.properties ?? {};

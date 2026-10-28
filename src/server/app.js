@@ -8,7 +8,11 @@ import {
   ProviderDownError,
   ProviderError,
   RateLimitedError,
+  RefusedError,
 } from '../llm/provider.js';
+import { DIFFICULTIES, GenerationError, generateProblem } from '../problems/generator.js';
+import { publicResult, reviewSubmission } from '../problems/review.js';
+import { publicProblem } from '../problems/store.js';
 import { HttpError, compose, readJson, sendJson } from './http.js';
 import { Router } from './router.js';
 import { openSse } from './sse.js';
@@ -17,6 +21,8 @@ import { serveStatic } from './static.js';
 /** @typedef {import('./http.js').Context} Context */
 
 const MAX_MESSAGE_CHARS = 4000;
+const MAX_CODE_CHARS = 50_000;
+const MAX_CONCURRENT_GENERATIONS = 2;
 
 const SECURITY_HEADERS = {
   'Content-Security-Policy':
@@ -34,19 +40,24 @@ const SECURITY_HEADERS = {
  *   kb: import('../search/knowledge-base.js').KnowledgeBase,
  *   provider: import('../llm/provider.js').LLMProvider,
  *   sessions: import('./sessions.js').MemorySessionStore,
+ *   runner: import('../runner/runner.js').CodeRunner,
+ *   problems: import('../problems/store.js').ProblemStore,
  *   staticDir?: string,
  *   log?: (entry: Record<string, unknown>) => void,
  * }} deps
  */
-export function createApp({ kb, provider, sessions, staticDir, log = jsonLog }) {
+export function createApp({ kb, provider, sessions, runner, problems, staticDir, log = jsonLog }) {
   const tools = createTools({ kb });
   /** Open SSE streams, so shutdown can cancel them. @type {Set<AbortController>} */
   const activeStreams = new Set();
+  let generationsInFlight = 0;
 
   const router = new Router()
     .get('/healthz', ({ res }) => sendJson(res, 200, { ok: true }))
     .get('/readyz', ({ res }) => sendJson(res, 200, { ok: true, ...kb.stats }))
     .get('/api/topics', ({ res }) => sendJson(res, 200, { topics: kb.topics() }))
+
+    // ---- Ask mode -------------------------------------------------------
     .post('/api/sessions', async ({ req, res }) => {
       const body = (await readJson(req)) ?? {};
       if (body.mode !== undefined && body.mode !== 'ask') {
@@ -59,57 +70,130 @@ export function createApp({ kb, provider, sessions, staticDir, log = jsonLog }) 
       const session = getSession(params.id);
       sendJson(res, 200, { id: session.id, mode: session.mode, messages: toDisplayMessages(session.messages) });
     })
-    .post('/api/sessions/:id/messages', (ctx) => streamTurn(ctx));
+    .post('/api/sessions/:id/messages', async (ctx) => {
+      const session = getSession(ctx.params.id);
+      const text = requireString(await readJson(ctx.req), 'text', MAX_MESSAGE_CHARS);
+      if (session.busy) throw new HttpError(409, 'busy', 'This session is already answering a message');
+
+      session.busy = true;
+      sessions.touch(session);
+      try {
+        await streamSse(ctx, async (sse, signal) => {
+          const result = await runAgentTurn({
+            provider,
+            system: ASK_SYSTEM_PROMPT,
+            messages: session.messages,
+            userText: text,
+            tools,
+            effort: 'low',
+            signal,
+            onEvent: (event) => sse.send(event.type, event),
+          });
+          sse.send('done', { status: result.status, usage: result.usage });
+          ctx.log({ event: 'turn', status: result.status, ...result.usage });
+        });
+      } finally {
+        session.busy = false;
+        sessions.touch(session);
+      }
+    })
+
+    // ---- Code mode ------------------------------------------------------
+    .get('/api/problems', ({ res, url }) => {
+      const topic = url.searchParams.get('topic') || undefined;
+      const list = problems.list({ topic }).map(({ id, title, topic: t, difficulty, createdAt }) => ({
+        id,
+        title,
+        topic: t,
+        difficulty,
+        createdAt,
+      }));
+      sendJson(res, 200, { problems: list });
+    })
+    .get('/api/problems/:id', ({ res, params }) => sendJson(res, 200, publicProblem(getProblem(params.id))))
+    .post('/api/problems', async (ctx) => {
+      const body = (await readJson(ctx.req)) ?? {};
+      const topic = normalizeTopic(body.topic);
+      const difficulty = body.difficulty ?? 'medium';
+      if (!DIFFICULTIES.includes(difficulty)) {
+        throw new HttpError(400, 'invalid_difficulty', `difficulty must be one of ${DIFFICULTIES.join(', ')}`);
+      }
+      if (generationsInFlight >= MAX_CONCURRENT_GENERATIONS) {
+        throw new HttpError(429, 'busy', 'Other problems are being generated right now. Try again in a minute.');
+      }
+      generationsInFlight++;
+      try {
+        await streamSse(ctx, async (sse, signal) => {
+          const problem = await generateProblem({
+            provider,
+            runner,
+            store: problems,
+            kb,
+            topic,
+            difficulty,
+            signal,
+            onProgress: (event) => sse.send('progress', event),
+          });
+          ctx.log({ event: 'problem_generated', problemId: problem.id, topic, difficulty });
+          sse.send('problem', publicProblem(problem));
+        });
+      } finally {
+        generationsInFlight--;
+      }
+    })
+    .post('/api/problems/:id/run', async ({ req, res, params }) => {
+      const problem = getProblem(params.id);
+      const code = requireString(await readJson(req), 'code', MAX_CODE_CHARS, { trim: false });
+      const result = await runner.run({ code, tests: problem.visibleTests });
+      sendJson(res, 200, publicResult(problem, result));
+    })
+    .post('/api/problems/:id/submit', async (ctx) => {
+      const problem = getProblem(ctx.params.id);
+      const code = requireString(await readJson(ctx.req), 'code', MAX_CODE_CHARS, { trim: false });
+      await streamSse(ctx, async (sse, signal) => {
+        const result = await runner.run({ code, tests: [...problem.visibleTests, ...problem.hiddenTests] }, { signal });
+        sse.send('result', publicResult(problem, result));
+        const review = await reviewSubmission({
+          provider,
+          problem,
+          code,
+          result,
+          signal,
+          onEvent: (event) => sse.send(event.type, event),
+        });
+        sse.send('done', { status: review.status, usage: review.usage });
+        ctx.log({ event: 'submission', problemId: problem.id, passed: result.passed, total: result.total });
+      });
+    });
 
   /**
-   * POST a message → the response is an SSE stream of the agent's turn.
+   * Run `work` with the response as an SSE stream. The browser disconnecting
+   * (tab closed, Stop pressed) aborts `signal`, which cancels the model call
+   * so we stop paying for tokens nobody will read. Errors become an `error`
+   * event with a stable code.
    * @param {Context} ctx
+   * @param {(sse: ReturnType<typeof openSse>, signal: AbortSignal) => Promise<void>} work
    */
-  async function streamTurn({ req, res, params, log: logRequest }) {
-    const session = getSession(params.id);
-    const body = await readJson(req);
-    const text = typeof body?.text === 'string' ? body.text.trim() : '';
-    if (!text) throw new HttpError(400, 'empty_message', 'Send { "text": "..." }');
-    if (text.length > MAX_MESSAGE_CHARS) {
-      throw new HttpError(400, 'message_too_long', `Messages are limited to ${MAX_MESSAGE_CHARS} characters`);
-    }
-    if (session.busy) throw new HttpError(409, 'busy', 'This session is already answering a message');
-
-    session.busy = true;
-    sessions.touch(session);
+  async function streamSse({ res, log: logRequest }, work) {
     const controller = new AbortController();
     activeStreams.add(controller);
-    // Browser closed the tab / pressed Stop: cancel the model call so we
-    // stop paying for tokens nobody will read.
     res.on('close', () => {
       if (!res.writableFinished) controller.abort();
     });
-
     const sse = openSse(res);
     try {
-      const result = await runAgentTurn({
-        provider,
-        system: ASK_SYSTEM_PROMPT,
-        messages: session.messages,
-        userText: text,
-        tools,
-        effort: 'low',
-        signal: controller.signal,
-        onEvent: (event) => sse.send(event.type, event),
-      });
-      sse.send('done', { status: result.status, usage: result.usage });
-      logRequest({ event: 'turn', status: result.status, ...result.usage });
+      await work(sse, controller.signal);
     } catch (err) {
-      if (err instanceof AbortedError) {
-        logRequest({ event: 'turn', status: 'aborted' });
+      if (err instanceof AbortedError || controller.signal.aborted) {
+        logRequest({ event: 'stream', status: 'aborted' });
       } else {
         const { code, message } = describeError(err);
-        if (code === 'internal') logRequest({ event: 'turn_error', error: String(err?.stack ?? err) });
+        if (code === 'internal' || code === 'generation_failed') {
+          logRequest({ level: 'error', event: 'stream_error', error: String(err?.stack ?? err) });
+        }
         sse.send('error', { code, message });
       }
     } finally {
-      session.busy = false;
-      sessions.touch(session);
       activeStreams.delete(controller);
       sse.close();
     }
@@ -120,6 +204,13 @@ export function createApp({ kb, provider, sessions, staticDir, log = jsonLog }) 
     const session = sessions.get(id);
     if (!session) throw new HttpError(404, 'session_not_found', 'Session not found or expired');
     return session;
+  }
+
+  /** @param {string} id */
+  function getProblem(id) {
+    const problem = problems.get(id);
+    if (!problem) throw new HttpError(404, 'problem_not_found', 'Problem not found');
+    return problem;
   }
 
   const handle = compose([
@@ -155,11 +246,33 @@ export function createApp({ kb, provider, sessions, staticDir, log = jsonLog }) 
   return handler;
 }
 
+/**
+ * @param {any} body
+ * @param {string} field
+ * @param {number} maxChars
+ */
+function requireString(body, field, maxChars, { trim = true } = {}) {
+  const raw = body?.[field];
+  const value = typeof raw === 'string' ? (trim ? raw.trim() : raw) : '';
+  if (!value.trim()) throw new HttpError(400, `empty_${field}`, `Send { "${field}": "..." }`);
+  if (value.length > maxChars) throw new HttpError(400, `${field}_too_long`, `"${field}" is limited to ${maxChars} characters`);
+  return value;
+}
+
+/** "Event Loop" → "event-loop"; rejects anything that isn't a short plain topic name. */
+function normalizeTopic(topic) {
+  const value = typeof topic === 'string' ? topic.trim().toLowerCase().replace(/[\s_]+/g, '-') : '';
+  if (!/^[a-z0-9][a-z0-9-]{1,59}$/.test(value)) {
+    throw new HttpError(400, 'invalid_topic', 'topic must be 2-60 letters, digits or dashes, e.g. "promises"');
+  }
+  return value;
+}
+
 /** Request ID + one structured log line per request, written when it ends. */
 function requestContext(log) {
   return async (/** @type {Context} */ ctx, next) => {
     const started = performance.now();
-    ctx.requestId = (ctx.req.headers['x-request-id']?.toString().slice(0, 64)) || randomUUID();
+    ctx.requestId = ctx.req.headers['x-request-id']?.toString().slice(0, 64) || randomUUID();
     ctx.res.setHeader('X-Request-Id', ctx.requestId);
     ctx.log = (fields) => log({ level: 'info', requestId: ctx.requestId, ...fields });
     ctx.res.on('close', () => {
@@ -192,6 +305,8 @@ async function errorHandler(/** @type {Context} */ ctx, next) {
     }
     if (err instanceof HttpError) {
       sendJson(ctx.res, err.status, { error: { code: err.code, message: err.message } });
+    } else if (err instanceof RangeError) {
+      sendJson(ctx.res, 400, { error: { code: 'bad_request', message: err.message } });
     } else {
       ctx.log({ level: 'error', msg: 'request failed', error: String(err?.stack ?? err) });
       sendJson(ctx.res, 500, { error: { code: 'internal', message: 'Internal error' } });
@@ -203,12 +318,16 @@ async function notFound(/** @type {Context} */ ctx) {
   throw new HttpError(404, 'not_found', `No route for ${ctx.req.method} ${ctx.url.pathname}`);
 }
 
-/** Map provider errors to codes the UI can act on. */
+/** Map errors to codes the UI can act on. */
 export function describeError(err) {
   if (err instanceof InvalidKeyError) return { code: 'invalid_key', message: err.message };
   if (err instanceof RateLimitedError) return { code: 'rate_limited', message: err.message };
   if (err instanceof ProviderDownError) return { code: 'provider_down', message: err.message };
+  if (err instanceof RefusedError) return { code: 'refused', message: err.message };
   if (err instanceof ProviderError) return { code: 'provider_error', message: err.message };
+  if (err instanceof GenerationError) {
+    return { code: 'generation_failed', message: 'Could not generate a problem that passes its own tests. Please try again.' };
+  }
   return { code: 'internal', message: 'Something went wrong on our side.' };
 }
 
@@ -241,5 +360,5 @@ export function toDisplayMessages(messages) {
 
 /** @param {Record<string, unknown>} entry */
 function jsonLog(entry) {
-  process.stdout.write(`${JSON.stringify({ time: new Date().toISOString(), ...entry })}\n`);
+  process.stdout.write(`${JSON.stringify({ time: new Date().toISOString(), level: 'info', ...entry })}\n`);
 }

@@ -14,6 +14,8 @@ const HELP = `preppilot — AI interview coach
 Usage:
   preppilot ask "<question>"                                One question, answered from your notes
   preppilot chat                                            Multi-turn conversation (Ctrl+C stops an answer, Ctrl+D exits)
+  preppilot code new [--topic promises] [--difficulty medium]   Generate a verified coding problem
+  preppilot code list | run <id> <file> | submit <id> <file>     Practise it (submit = all tests + AI review)
   preppilot serve [--port 8080] [--host 127.0.0.1]          Start the web app
   preppilot search "<query>" [--k 5] [--topic event-loop]   Search your notes (no AI)
   preppilot index                                           Show what gets indexed
@@ -36,6 +38,7 @@ async function main() {
       model: { type: 'string' },
       port: { type: 'string' },
       host: { type: 'string' },
+      difficulty: { type: 'string' },
     },
   });
   const [command, ...rest] = positionals;
@@ -50,6 +53,10 @@ async function main() {
     }
     case 'chat':
       return chat(await createSession(values));
+    case 'code': {
+      const { codeCommand } = await import('../src/cli/code.js');
+      return codeCommand(rest, values);
+    }
     case 'serve': {
       const port = Number(values.port ?? process.env.PORT ?? 8080);
       if (!Number.isInteger(port) || port < 0 || port > 65535) return fail('--port must be 0-65535');

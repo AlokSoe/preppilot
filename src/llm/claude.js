@@ -6,6 +6,7 @@ import {
   ProviderDownError,
   ProviderError,
   RateLimitedError,
+  RefusedError,
 } from './provider.js';
 
 /** @typedef {import('./provider.js').Message} Message */
@@ -55,7 +56,7 @@ export class ClaudeProvider {
           model: this.model,
           max_tokens: this.maxTokens,
           system,
-          tools: tools.map(toClaudeTool),
+          ...(tools.length > 0 && { tools: tools.map(toClaudeTool) }),
           messages: toClaudeMessages(messages),
           output_config: { effort },
           // Caches the longest stable prefix (tools + system + history so far).
@@ -77,6 +78,45 @@ export class ClaudeProvider {
     }
   }
 
+  /**
+   * One call whose answer must be JSON matching `schema` (structured outputs).
+   * Streamed internally so long outputs don't hit HTTP timeouts.
+   * @param {{ system: string, messages: Message[], schema: object,
+   *           effort?: import('./provider.js').Effort, signal?: AbortSignal }} args
+   */
+  async generateJson({ system, messages, schema, effort = 'medium', signal }) {
+    let message;
+    try {
+      const stream = this.client.beta.messages.stream(
+        {
+          model: this.model,
+          max_tokens: this.maxTokens,
+          system,
+          messages: toClaudeMessages(messages),
+          output_config: { effort, format: { type: 'json_schema', schema: toApiSchema(schema) } },
+          betas: [FALLBACK_BETA],
+          fallbacks: 'default',
+        },
+        { signal },
+      );
+      message = await stream.finalMessage();
+    } catch (err) {
+      throw toProviderError(err);
+    }
+    if (message.stop_reason === 'refusal') throw new RefusedError('The model declined this request.');
+    if (message.stop_reason === 'max_tokens') throw new ProviderError('The JSON answer was cut off (max tokens).');
+
+    const turn = fromClaudeMessage(message);
+    const text = turn.content.flatMap((b) => (b.type === 'text' ? [b.text] : [])).join('');
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      throw new ProviderError('The model returned invalid JSON.');
+    }
+    return { data, text, usage: turn.usage, raw: turn.raw };
+  }
+
   /** Cheap check that the key works: listing models costs no tokens. */
   async validateKey() {
     try {
@@ -85,6 +125,33 @@ export class ClaudeProvider {
       throw toProviderError(err);
     }
   }
+}
+
+const UNSUPPORTED_SCHEMA_KEYS = new Set(['minLength', 'maxLength', 'minimum', 'maximum', 'multipleOf', 'minItems', 'maxItems']);
+
+/**
+ * Structured outputs reject numeric/length constraints, so strip them from
+ * what we send. Callers still validate the result against the full schema.
+ * @param {any} schema
+ * @returns {any}
+ */
+export function toApiSchema(schema) {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return schema;
+  const out = {};
+  for (const [key, value] of Object.entries(schema)) {
+    if (UNSUPPORTED_SCHEMA_KEYS.has(key)) continue;
+    if (key === 'properties') {
+      // Keys here are property NAMES (a property may be called "minimum"), not keywords.
+      out.properties = Object.fromEntries(Object.entries(value).map(([name, sub]) => [name, toApiSchema(sub)]));
+    } else if (key === 'items' || key === 'additionalProperties') {
+      out[key] = toApiSchema(value);
+    } else if (key === 'anyOf' || key === 'allOf') {
+      out[key] = value.map(toApiSchema);
+    } else {
+      out[key] = value; // type, enum, required, description, ...
+    }
+  }
+  return out;
 }
 
 /** @param {ToolSpec} tool */

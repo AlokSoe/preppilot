@@ -1,9 +1,12 @@
 import { createServer } from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadSources } from '../config.js';
+import { databasePath, loadSources } from '../config.js';
 import { KnowledgeBase } from '../search/knowledge-base.js';
 import { createProvider } from '../llm/index.js';
+import { openDatabase } from '../db/database.js';
+import { CodeRunner } from '../runner/runner.js';
+import { ProblemStore } from '../problems/store.js';
 import { createApp } from './app.js';
 import { MemorySessionStore } from './sessions.js';
 
@@ -16,10 +19,13 @@ const WEB_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../.
  */
 export async function startServer({ port = 8080, host = '127.0.0.1' } = {}) {
   const kb = await KnowledgeBase.build(await loadSources());
+  const db = openDatabase(databasePath());
   const handler = createApp({
     kb,
     provider: createProvider({ provider: 'claude', model: process.env.PREPPILOT_MODEL }),
     sessions: new MemorySessionStore(),
+    runner: new CodeRunner({ concurrency: Number(process.env.RUNNER_CONCURRENCY ?? 4) }),
+    problems: new ProblemStore(db),
     staticDir: WEB_DIR,
   });
 
@@ -41,7 +47,10 @@ export async function startServer({ port = 8080, host = '127.0.0.1' } = {}) {
 
   const shutdown = (signal) => {
     console.log(JSON.stringify({ level: 'info', msg: 'shutting down', signal }));
-    server.close(() => process.exit(0));
+    server.close(() => {
+      db.close();
+      process.exit(0);
+    });
     handler.abortAll();
     server.closeIdleConnections();
     setTimeout(() => process.exit(1), 5000).unref(); // don't hang forever

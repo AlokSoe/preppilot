@@ -41,6 +41,13 @@
  *     effort?: Effort,
  *     signal?: AbortSignal,
  *   }): AsyncGenerator<{ type: 'text', delta: string }, Turn>,
+ *   generateJson(args: {
+ *     system: string,
+ *     messages: Message[],
+ *     schema: object,
+ *     effort?: Effort,
+ *     signal?: AbortSignal,
+ *   }): Promise<{ data: any, text: string, usage: Usage, raw?: Message['raw'] }>,
  *   validateKey(): Promise<void>,
  * }} LLMProvider
  */
@@ -59,6 +66,8 @@ export class InvalidKeyError extends ProviderError {}
 export class RateLimitedError extends ProviderError {}
 /** The provider is down or overloaded, or the network failed. */
 export class ProviderDownError extends ProviderError {}
+/** The model declined the request (safety), so there is no usable output. */
+export class RefusedError extends ProviderError {}
 /** The request was cancelled by the caller (AbortSignal). */
 export class AbortedError extends ProviderError {}
 /**
