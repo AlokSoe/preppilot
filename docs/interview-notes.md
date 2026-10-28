@@ -108,3 +108,58 @@ provider and a fake SDK client.
 > parse-error message, handled missing credentials first, and added a regression test for both
 > error classes. **Lesson:** classify errors as narrowly as possible, especially when the
 > classification triggers a retry.
+
+---
+
+## M3 — HTTP server, SSE streaming, web chat UI
+
+**What I built:** a server on plain `node:http` with my own router and Koa-style middleware
+(request ID + JSON logs, security headers, error handler), an in-memory session store, an SSE
+endpoint that streams the agent's turn, and a framework-free chat UI with an XSS-safe markdown
+renderer. 85 tests, including an integration test that runs the real server on a random port with
+a fake model.
+
+### Questions you can expect
+
+**"Why SSE and not WebSockets?"**
+> The stream only flows server → browser; the browser sends each message as a normal POST. SSE is
+> plain HTTP, so it works through proxies and load balancers, and needs no extra protocol. I send a
+> `: ping` comment every 15 s so idle proxies don't cut the connection while the model is thinking.
+
+**"EventSource only supports GET — how do you stream a POST?"**
+> I use `fetch()` and read `response.body` as a stream, then parse SSE myself: buffer text until a
+> blank line ends an event, because network chunks can split an event anywhere. I have a test that
+> feeds the stream 7 bytes at a time.
+
+**"What happens when the user closes the tab mid-answer?"**
+> The server listens for the response's `close` event; if the response hadn't finished, it aborts
+> an `AbortController` whose signal is passed all the way to the model API call. So we stop paying
+> for tokens nobody will read, and the session is freed for the next message.
+
+**"How do you stop two messages racing in one conversation?"**
+> A `busy` flag per session: a second message while one is streaming gets `409 busy`. The flag is
+> cleared in a `finally`, so errors and disconnects can't leave a session stuck — there's a test for that.
+
+**"How do you prevent XSS from model output?"**
+> The markdown renderer parses text into a plain tree, then builds DOM nodes with `createElement`
+> and `textContent`. Nothing ever goes through `innerHTML`, links are only rendered for `http(s)`
+> URLs, and a strict Content-Security-Policy (`script-src 'self'`) is a second layer. Tests check
+> that `<img onerror=…>` and `javascript:` links stay plain text.
+
+**"Explain your middleware design."**
+> `compose()` turns a list of `(ctx, next)` functions into one, like Koa: code before `await next()`
+> runs on the way in, code after runs on the way out. That's how the error handler wraps everything
+> below it and the logger measures the full request time.
+
+**"Why keep sessions in memory?"**
+> It's the simplest thing for one instance, and it sits behind a small interface
+> (`create / get / touch`) so the SQLite store replaces it without touching the routes. Sessions
+> expire after 6 hours idle, and when the store is full the least recently used idle session is evicted —
+> using a `Map`'s insertion order as the LRU list, the same trick as the LRU cache in my notes.
+
+### Real bug I hit
+> An integration test got an `error` event instead of an answer. My fake provider did
+> `yield* script(args)` as a statement — but `yield*` *evaluates to* the delegate generator's return
+> value, so the turn was thrown away and the agent received `undefined`. Fix: `return yield* script(args)`.
+> Good generator trivia: `yield*` forwards yielded values automatically, but the return value only
+> if you use it.

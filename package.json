@@ -8,9 +8,11 @@
   },
   "files": [
     "bin",
-    "src"
+    "src",
+    "web"
   ],
   "scripts": {
+    "start": "node bin/preppilot.js serve",
     "test": "node --test",
     "search": "node bin/preppilot.js search"
   },

@@ -14,6 +14,7 @@ const HELP = `preppilot — AI interview coach
 Usage:
   preppilot ask "<question>"                                One question, answered from your notes
   preppilot chat                                            Multi-turn conversation (Ctrl+C stops an answer, Ctrl+D exits)
+  preppilot serve [--port 8080] [--host 127.0.0.1]          Start the web app
   preppilot search "<query>" [--k 5] [--topic event-loop]   Search your notes (no AI)
   preppilot index                                           Show what gets indexed
   preppilot help
@@ -22,7 +23,7 @@ Options for ask / chat:
   --effort low|medium|high    How hard the model thinks (default: low)
   --model <id>                Model ID (default: claude-opus-5-5)
 
-Needs ANTHROPIC_API_KEY for ask / chat.
+Needs ANTHROPIC_API_KEY for ask / chat / serve.
 `;
 
 async function main() {
@@ -33,6 +34,8 @@ async function main() {
       topic: { type: 'string' },
       effort: { type: 'string', default: 'low' },
       model: { type: 'string' },
+      port: { type: 'string' },
+      host: { type: 'string' },
     },
   });
   const [command, ...rest] = positionals;
@@ -47,6 +50,13 @@ async function main() {
     }
     case 'chat':
       return chat(await createSession(values));
+    case 'serve': {
+      const port = Number(values.port ?? process.env.PORT ?? 8080);
+      if (!Number.isInteger(port) || port < 0 || port > 65535) return fail('--port must be 0-65535');
+      const { startServer } = await import('../src/server/main.js');
+      await startServer({ port, host: values.host ?? process.env.HOST ?? '127.0.0.1' });
+      return;
+    }
     case 'search': {
       const query = rest.join(' ').trim();
       if (!query) return fail('search needs a query, e.g. preppilot search "event loop"');

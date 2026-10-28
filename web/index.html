@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PrepPilot</title>
+    <meta name="description" content="AI interview coach that answers from your own JavaScript notes." />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <div class="brand"><img src="/favicon.svg" alt="" width="22" height="22" /> PrepPilot</div>
+        <span class="mode">Ask mode</span>
+        <button id="new-chat" class="ghost" type="button">New chat</button>
+      </header>
+
+      <main id="log" class="log" role="log">
+        <section id="empty" class="empty">
+          <h1>Ask anything about JavaScript</h1>
+          <p>Answers come from your own notes, with the file and section they came from.</p>
+          <div id="examples" class="examples"></div>
+        </section>
+      </main>
+
+      <form id="composer" class="composer">
+        <label for="input" class="visually-hidden">Your question</label>
+        <textarea
+          id="input"
+          rows="1"
+          maxlength="4000"
+          placeholder="Ask about closures, the event loop, an LRU cache…"
+          autocomplete="off"
+        ></textarea>
+        <button id="send" type="submit">Send</button>
+        <button id="stop" type="button" class="danger" hidden>Stop</button>
+      </form>
+      <p class="hint">Enter to send · Shift+Enter for a new line</p>
+    </div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
