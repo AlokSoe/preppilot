@@ -6,8 +6,11 @@ import { KnowledgeBase } from '../src/search/knowledge-base.js';
 import { createProvider } from '../src/llm/index.js';
 import { AbortedError, InvalidKeyError, ProviderError } from '../src/llm/provider.js';
 import { runAgentTurn } from '../src/agent/agent.js';
-import { createInterviewTools, createTools } from '../src/agent/tools.js';
-import { ASK_SYSTEM_PROMPT, INTERVIEW_SYSTEM_PROMPT } from '../src/agent/prompts.js';
+import { writeFile } from 'node:fs/promises';
+import { createBuildTools, createInterviewTools, createTools } from '../src/agent/tools.js';
+import { ASK_SYSTEM_PROMPT, BUILD_SYSTEM_PROMPT, INTERVIEW_SYSTEM_PROMPT } from '../src/agent/prompts.js';
+import { CodeRunner } from '../src/runner/runner.js';
+import { toRunnableFile } from '../web/runnable.js';
 import { loadRounds, roundBriefing } from '../src/interview/rounds.js';
 import { openDatabase } from '../src/db/database.js';
 import { ProgressStore } from '../src/progress/progress.js';
@@ -19,6 +22,7 @@ Usage:
   preppilot chat                                            Multi-turn conversation (Ctrl+C stops an answer, Ctrl+D exits)
   preppilot interview [--round 4]                           Mock interview, graded 1-10 per answer (no --round: list rounds)
   preppilot progress                                        Mastery per topic and what to study next
+  preppilot build "<requirement>"                           Design, code, test and explain it (saves passing code)
   preppilot code new [--topic promises] [--difficulty medium]   Generate a verified coding problem
   preppilot code list | run <id> <file> | submit <id> <file>     Practise it (submit = all tests + AI review)
   preppilot serve [--port 8080] [--host 127.0.0.1]          Start the web app
@@ -72,6 +76,12 @@ async function main() {
     }
     case 'progress':
       return printProgress();
+    case 'build': {
+      const requirement = rest.join(' ').trim();
+      if (!requirement) return fail('build needs a requirement, e.g. preppilot build "a rate limiter, N calls per minute"');
+      const session = await createSession({ ...values, effort: 'high', mode: 'build' });
+      return chat(session, requirement);
+    }
     case 'code': {
       const { codeCommand } = await import('../src/cli/code.js');
       return codeCommand(rest, values);
@@ -114,7 +124,7 @@ async function main() {
 
 /**
  * A conversation: history + the agent, rendering events to the terminal.
- * @param {{ effort: string, model?: string, mode?: 'ask' | 'interview',
+ * @param {{ effort: string, model?: string, mode?: 'ask' | 'interview' | 'build',
  *           round?: import('../src/interview/rounds.js').Round }} options
  */
 async function createSession({ effort, model, mode = 'ask', round }) {
@@ -128,26 +138,43 @@ async function createSession({ effort, model, mode = 'ask', round }) {
     const progress = new ProgressStore(openDatabase(databasePath()));
     tools = createInterviewTools({ kb, provider, progress, rubric, userId: 'local' });
   }
+  const runner = mode === 'build' ? new CodeRunner() : null;
   /** @type {import('../src/llm/provider.js').Message[]} */
   const messages = [];
+  const system = { ask: ASK_SYSTEM_PROMPT, interview: INTERVIEW_SYSTEM_PROMPT, build: BUILD_SYSTEM_PROMPT }[mode];
 
   return {
     /** @param {string} userText @param {AbortSignal} [signal] */
     async send(userText, signal) {
       const out = new TerminalRenderer();
+      /** run_code inputs by tool id; the last fully passing one is saved */
+      const runs = new Map();
+      let passing = null;
       try {
         const result = await runAgentTurn({
           provider,
-          system: mode === 'interview' ? INTERVIEW_SYSTEM_PROMPT : ASK_SYSTEM_PROMPT,
+          system,
           messages,
           userText,
           context: round && messages.length === 0 ? roundBriefing(round) : undefined,
-          tools,
+          tools: runner ? createBuildTools({ kb, runner }) : tools,
           effort: /** @type {any} */ (effort),
           signal,
-          onEvent: (event) => out.render(event),
+          onEvent: (event) => {
+            if (event.type === 'tool_start' && event.name === 'run_code') runs.set(event.id, event.input);
+            if (event.type === 'tool_end' && runs.has(event.id)) {
+              const counts = /(\d+)\/(\d+)/.exec(event.summary);
+              if (event.ok && counts && counts[1] === counts[2]) passing = runs.get(event.id);
+            }
+            out.render(event);
+          },
         });
         out.finish(result);
+        if (passing) {
+          const file = 'preppilot-build.js';
+          await writeFile(file, toRunnableFile(passing.code, passing.tests, userText.slice(0, 80)));
+          console.error(styleText('green', `Saved passing code + tests to ${file}`) + dim(` (run: node ${file})`));
+        }
       } catch (err) {
         out.newline();
         if (err instanceof AbortedError) return console.error(dim('(stopped)'));

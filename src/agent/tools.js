@@ -55,6 +55,61 @@ export function createInterviewTools({ kb, provider, progress, rubric, userId })
   ];
 }
 
+const MAX_RUNS_PER_TURN = 6; // first run + 3 fix rounds, with some slack
+
+/**
+ * Build mode: the note tools plus run_code. Create one set per user turn:
+ * the run counter caps how many times the model can execute code in a turn.
+ * @param {{
+ *   kb: import('../search/knowledge-base.js').KnowledgeBase,
+ *   runner: import('../runner/runner.js').CodeRunner,
+ * }} deps
+ * @returns {Tool[]}
+ */
+export function createBuildTools({ kb, runner }) {
+  let runs = 0;
+  const testSchema = {
+    type: 'object',
+    properties: {
+      name: { type: 'string', minLength: 1, maxLength: 200 },
+      code: { type: 'string', minLength: 1, maxLength: 20_000 },
+    },
+    required: ['name', 'code'],
+    additionalProperties: false,
+  };
+  return [
+    ...createTools({ kb }),
+    {
+      name: 'run_code',
+      description:
+        'Run JavaScript against tests in a sandbox (no network, file system or DOM; 5 s limit). ' +
+        '`code` declares top-level functions/classes. Each test `code` is the body of an async function ' +
+        'with `assert` (node:assert/strict) in scope; the code is re-evaluated fresh for every test. ' +
+        'Returns pass/fail per test with errors, plus console output.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          code: { type: 'string', minLength: 1, maxLength: 100_000 },
+          tests: { type: 'array', items: testSchema, minItems: 1, maxItems: 40 },
+        },
+        required: ['code', 'tests'],
+        additionalProperties: false,
+      },
+      async run({ code, tests }, { signal }) {
+        if (++runs > MAX_RUNS_PER_TURN) {
+          throw new Error(`Run limit reached (${MAX_RUNS_PER_TURN} per turn). Explain what is left instead of running again.`);
+        }
+        const result = await runner.run({ code, tests }, { signal });
+        const lines = [`status: ${result.status}${result.error ? ` (${result.error})` : ''}`, `passed: ${result.passed}/${result.total}`];
+        for (const t of result.tests) lines.push(`${t.passed ? 'PASS' : 'FAIL'} ${t.name}${t.error ? ` — ${t.error}` : ''}`);
+        if (result.logs) lines.push('console output:', result.logs.slice(0, 4000));
+        return lines.join('\n');
+      },
+      summarize: (input, output) => /passed: (\d+\/\d+)/.exec(output)?.[1].concat(' tests passed') ?? 'ran',
+    },
+  ];
+}
+
 /**
  * @param {{ kb: import('../search/knowledge-base.js').KnowledgeBase }} deps
  * @returns {Tool[]}

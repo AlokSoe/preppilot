@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { runAgentTurn } from '../agent/agent.js';
-import { createInterviewTools, createTools } from '../agent/tools.js';
-import { ASK_SYSTEM_PROMPT, INTERVIEW_SYSTEM_PROMPT } from '../agent/prompts.js';
+import { createBuildTools, createInterviewTools, createTools } from '../agent/tools.js';
+import { ASK_SYSTEM_PROMPT, BUILD_SYSTEM_PROMPT, INTERVIEW_SYSTEM_PROMPT } from '../agent/prompts.js';
 import { roundBriefing } from '../interview/rounds.js';
 import {
   AbortedError,
@@ -22,6 +22,7 @@ import { serveStatic } from './static.js';
 /** @typedef {import('./http.js').Context} Context */
 
 const MAX_MESSAGE_CHARS = 4000;
+const CHAT_MODES = ['ask', 'interview', 'build'];
 const MAX_CODE_CHARS = 50_000;
 const MAX_CONCURRENT_GENERATIONS = 2;
 
@@ -72,7 +73,7 @@ export function createApp({ kb, provider, sessions, runner, problems, progress, 
     .post('/api/sessions', async ({ req, res }) => {
       const body = (await readJson(req)) ?? {};
       const mode = body.mode ?? 'ask';
-      if (mode !== 'ask' && mode !== 'interview') throw new HttpError(400, 'invalid_mode', 'mode must be "ask" or "interview"');
+      if (!CHAT_MODES.includes(mode)) throw new HttpError(400, 'invalid_mode', `mode must be one of ${CHAT_MODES.join(', ')}`);
       let roundId = null;
       if (mode === 'interview') {
         roundId = Number(body.round);
@@ -95,21 +96,26 @@ export function createApp({ kb, provider, sessions, runner, problems, progress, 
       const text = requireString(await readJson(ctx.req), 'text', MAX_MESSAGE_CHARS);
       if (session.busy) throw new HttpError(409, 'busy', 'This session is already answering a message');
 
-      const isInterview = session.mode === 'interview';
-      const round = isInterview ? interview.rounds.find((r) => r.id === session.roundId) : undefined;
+      const round = session.mode === 'interview' ? interview.rounds.find((r) => r.id === session.roundId) : undefined;
+      const config = {
+        ask: { system: ASK_SYSTEM_PROMPT, tools, effort: 'low' },
+        interview: { system: INTERVIEW_SYSTEM_PROMPT, tools: interviewTools, effort: 'medium' },
+        // Fresh build tools per turn: run_code counts runs per turn.
+        build: { system: BUILD_SYSTEM_PROMPT, tools: createBuildTools({ kb, runner }), effort: 'high' },
+      }[session.mode];
       session.busy = true;
       sessions.touch(session);
       try {
         await streamSse(ctx, async (sse, signal) => {
           const result = await runAgentTurn({
             provider,
-            system: isInterview ? INTERVIEW_SYSTEM_PROMPT : ASK_SYSTEM_PROMPT,
+            system: config.system,
             messages: session.messages,
             userText: text,
             // The round briefing rides along with the first message only.
             context: round && session.messages.length === 0 ? roundBriefing(round) : undefined,
-            tools: isInterview ? interviewTools : tools,
-            effort: isInterview ? 'medium' : 'low',
+            tools: config.tools,
+            effort: /** @type {import('../llm/provider.js').Effort} */ (config.effort),
             signal,
             onEvent: (event) => sse.send(event.type, event),
           });

@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 /**
  * @typedef {{
  *   id: string,
- *   mode: 'ask' | 'interview',
+ *   mode: 'ask' | 'interview' | 'build',
  *   roundId: number | null,
  *   messages: import('../llm/provider.js').Message[],
  *   busy: boolean,

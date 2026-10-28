@@ -262,3 +262,36 @@ topic, and Progress pages in the web UI and CLI.
 > "Study next" ranked a strong topic above a weak one when neither was due yet, because the sort
 > compared exact due timestamps first — a millisecond apart. Fix: only overdue topics are ordered by
 > due time; the rest are ordered by mastery. Added a test for "due beats weaker-but-not-due".
+
+---
+
+## M6 — Build mode
+
+**What I built:** a mode where you give a requirement and the agent clarifies it, designs an API,
+writes code and tests, runs them in the sandbox, fixes failures, and explains the result. The final
+passing code downloads as one file that runs with plain `node` (tests as `node:test` cases).
+
+### Questions you can expect
+
+**"How is Build mode different from asking a chatbot to write code?"**
+> The model has a `run_code` tool backed by the same sandbox as Code mode, so its claims are
+> checked: it must run its tests and read real failures before it can say "done". The prompt
+> enforces a process — clarify, design, implement, verify, explain — which is also how I'd want a
+> candidate to structure a machine-coding round.
+
+**"How do you stop the agent looping forever on failing tests?"**
+> Three layers: the prompt allows at most 3 fix rounds; the `run_code` tool refuses after 6 runs in
+> one turn (the tools are created fresh per turn, so the counter resets each turn); and the agent
+> loop has its own 8-iteration cap. Each layer catches what the one above might miss.
+
+**"Why give Build mode `high` effort but Ask mode `low`?"**
+> Effort trades tokens for thoroughness. Quick Q&A from notes doesn't need deep reasoning; designing,
+> implementing and debugging does, and a cheaper request that needs more fix rounds isn't actually
+> cheaper. I tune it per route, not globally.
+
+### Real bug I hit
+> My test for the downloadable file spawned `node file.js` from inside `node --test`, and the output
+> came back as binary. The child inherited `NODE_TEST_CONTEXT`, which tells node:test it's a
+> subprocess and should report over IPC. Clearing that variable in the child's env fixed it.
+> **Lesson:** child processes inherit the parent's environment — the same reason my sandbox starts
+> children with an empty env.

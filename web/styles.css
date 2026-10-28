@@ -738,3 +738,11 @@ button.danger {
 .recent .tag {
   margin-left: 0;
 }
+
+.link-button {
+  background: none;
+  color: var(--accent);
+  padding: 0;
+  font-size: 13px;
+  text-decoration: underline;
+}

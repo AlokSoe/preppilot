@@ -1,5 +1,6 @@
 import { readSse } from './sse.js';
 import { renderMarkdown } from './markdown.js';
+import { toRunnableFile } from './runnable.js';
 
 /**
  * A chat view (used by Ask and Interview): message log, composer, streaming,
@@ -7,7 +8,7 @@ import { renderMarkdown } from './markdown.js';
  *
  * @param {HTMLElement} root
  * @param {{
- *   mode: 'ask' | 'interview',
+ *   mode: 'ask' | 'interview' | 'build',
  *   newLabel: string,
  *   placeholder: string,
  *   renderEmpty: (start: (sessionOptions?: object, firstMessage?: string) => Promise<void>, send: (text: string) => void) => Node,
@@ -72,8 +73,9 @@ export function createChatView(root, { mode, newLabel, placeholder, renderEmpty 
   async function restoreOrReset() {
     const saved = storage('get');
     if (saved && (await restore(saved))) return;
-    if (mode === 'ask') await start();
-    else showEmpty();
+    // Interview waits for a round to be picked; the other modes start right away.
+    if (mode === 'interview') showEmpty();
+    else await start();
   }
 
   /** Reload the conversation after a page refresh. @param {string} id */
@@ -138,8 +140,8 @@ export function createChatView(root, { mode, newLabel, placeholder, renderEmpty 
     sessionId = null;
     storage('remove');
     clearLog();
-    if (mode === 'ask') await start();
-    else showEmpty();
+    if (mode === 'interview') showEmpty();
+    else await start();
   }
 
   function showEmpty() {
@@ -244,6 +246,8 @@ export function createChatView(root, { mode, newLabel, placeholder, renderEmpty 
 
     let latest = '';
     let frame = 0;
+    /** run_code inputs by tool id, so a passing run can be downloaded */
+    const runs = new Map();
     const render = () => {
       frame = 0;
       const pinned = isPinnedToBottom();
@@ -261,12 +265,19 @@ export function createChatView(root, { mode, newLabel, placeholder, renderEmpty 
         const item = el('li', 'running', describeTool(name, toolInput));
         item.dataset.id = id;
         activity.append(item);
+        if (name === 'run_code') runs.set(id, toolInput);
       },
       toolEnd({ id, ok, summary }) {
         const item = activity.querySelector(`li[data-id="${CSS.escape(id)}"]`);
         if (!item) return;
         item.className = ok ? 'ok' : 'failed';
         if (summary && !item.textContent?.startsWith('Graded')) item.append(el('span', 'summary', ` · ${summary}`));
+        // A run where every test passed (or a restored one) can be downloaded.
+        const run = runs.get(id);
+        const counts = /(\d+)\/(\d+)/.exec(summary ?? '');
+        if (run && ok && (!summary || (counts && counts[1] === counts[2]))) {
+          item.append(' ', downloadButton(run));
+        }
       },
       score(grade) {
         scores.append(renderScoreCard(grade));
@@ -344,6 +355,20 @@ export function createChatView(root, { mode, newLabel, placeholder, renderEmpty 
   return { focus: () => input.focus() };
 }
 
+/** A button that saves the code and its tests as one runnable file. */
+function downloadButton({ code, tests }) {
+  const button = el('button', 'link-button', 'Download code + tests');
+  button.type = 'button';
+  button.addEventListener('click', () => {
+    const blob = new Blob([toRunnableFile(code, tests)], { type: 'text/javascript' });
+    const url = URL.createObjectURL(blob);
+    const link = Object.assign(document.createElement('a'), { href: url, download: 'preppilot-build.js' });
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+  return button;
+}
+
 function describeTool(name, input) {
   if (name === 'search_notes') {
     const topic = input?.topic ? ` in ${input.topic}` : '';
@@ -351,6 +376,7 @@ function describeTool(name, input) {
   }
   if (name === 'list_topics') return 'Listed topics';
   if (name === 'grade_answer') return `Graded your answer (${input?.topic ?? 'topic'})`;
+  if (name === 'run_code') return `Ran ${input?.tests?.length ?? 0} tests in the sandbox`;
   return `Used ${name}`;
 }
 

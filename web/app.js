@@ -8,7 +8,26 @@ const ASK_EXAMPLES = [
   'Debounce vs throttle: differences and use cases',
 ];
 
-const VIEWS = ['ask', 'interview', 'code', 'progress'];
+const BUILD_EXAMPLES = [
+  'Build a rate limiter that allows N calls per user per minute',
+  'Build an event emitter with on, off, once and emit',
+  'Build a retry helper with exponential backoff and a timeout',
+  'Build a concurrency-limited task queue with pause and resume',
+];
+
+const VIEWS = ['ask', 'interview', 'build', 'code', 'progress'];
+
+/** Example prompts as buttons that send themselves. */
+function exampleButtons(examples, send) {
+  const wrap = el('div', 'examples');
+  for (const text of examples) {
+    const button = el('button', 'example', text);
+    button.type = 'button';
+    button.addEventListener('click', () => send(text));
+    wrap.append(button);
+  }
+  return wrap;
+}
 
 // ---- Ask -------------------------------------------------------------------
 createChatView(/** @type {HTMLElement} */ (document.getElementById('ask-view')), {
@@ -17,17 +36,30 @@ createChatView(/** @type {HTMLElement} */ (document.getElementById('ask-view')),
   placeholder: 'Ask about closures, the event loop, an LRU cache…',
   renderEmpty: (start, send) => {
     const fragment = document.createDocumentFragment();
-    const examples = el('div', 'examples');
-    for (const text of ASK_EXAMPLES) {
-      const button = el('button', 'example', text);
-      button.type = 'button';
-      button.addEventListener('click', () => send(text));
-      examples.append(button);
-    }
     fragment.append(
       el('h1', '', 'Ask anything about JavaScript'),
       el('p', '', 'Answers come from your own notes, with the file and section they came from.'),
-      examples,
+      exampleButtons(ASK_EXAMPLES, send),
+    );
+    return fragment;
+  },
+});
+
+// ---- Build -------------------------------------------------------------------
+createChatView(/** @type {HTMLElement} */ (document.getElementById('build-view')), {
+  mode: 'build',
+  newLabel: 'New build',
+  placeholder: 'Describe what to build: a requirement or problem statement…',
+  renderEmpty: (start, send) => {
+    const fragment = document.createDocumentFragment();
+    fragment.append(
+      el('h1', '', 'Build it, test it, explain it'),
+      el(
+        'p',
+        '',
+        'Give a requirement. PrepPilot clarifies it, designs the API, writes code and tests, runs them in a sandbox until they pass, and explains the result.',
+      ),
+      exampleButtons(BUILD_EXAMPLES, send),
     );
     return fragment;
   },
