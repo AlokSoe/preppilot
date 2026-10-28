@@ -7,6 +7,8 @@ import { createProvider } from '../llm/index.js';
 import { openDatabase } from '../db/database.js';
 import { CodeRunner } from '../runner/runner.js';
 import { ProblemStore } from '../problems/store.js';
+import { ProgressStore } from '../progress/progress.js';
+import { loadRounds } from '../interview/rounds.js';
 import { createApp } from './app.js';
 import { MemorySessionStore } from './sessions.js';
 
@@ -18,7 +20,8 @@ const WEB_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../.
  * @param {{ port?: number, host?: string }} [options]
  */
 export async function startServer({ port = 8080, host = '127.0.0.1' } = {}) {
-  const kb = await KnowledgeBase.build(await loadSources());
+  const sources = await loadSources();
+  const kb = await KnowledgeBase.build(sources);
   const db = openDatabase(databasePath());
   const handler = createApp({
     kb,
@@ -26,6 +29,8 @@ export async function startServer({ port = 8080, host = '127.0.0.1' } = {}) {
     sessions: new MemorySessionStore(),
     runner: new CodeRunner({ concurrency: Number(process.env.RUNNER_CONCURRENCY ?? 4) }),
     problems: new ProblemStore(db),
+    progress: new ProgressStore(db),
+    interview: await loadRounds(sources),
     staticDir: WEB_DIR,
   });
 

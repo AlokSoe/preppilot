@@ -10,6 +10,7 @@ import { toApiSchema } from '../src/llm/claude.js';
 import { createApp } from '../src/server/app.js';
 import { MemorySessionStore } from '../src/server/sessions.js';
 import { readSse } from '../web/sse.js';
+import { ProgressStore } from '../src/progress/progress.js';
 
 const runner = new CodeRunner();
 
@@ -159,6 +160,8 @@ before(async () => {
     sessions: new MemorySessionStore(),
     runner,
     problems: store,
+    progress: new ProgressStore(openDatabase(':memory:')),
+    interview: { rounds: [], rubric: '' },
     log: () => {},
   });
   server = createServer(handler);

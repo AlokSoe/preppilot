@@ -5,7 +5,8 @@
  * Each adapter (src/llm/claude.js, later openai.js / gemini.js) converts
  * to and from them.
  *
- * @typedef {{ type: 'text', text: string }} TextBlock
+ * @typedef {{ type: 'text', text: string, hidden?: boolean }} TextBlock
+ *   `hidden`: sent to the model but not shown in the UI (e.g. round briefings).
  * @typedef {{ type: 'tool_call', id: string, name: string, input: unknown }} ToolCallBlock
  * @typedef {{ type: 'tool_result', id: string, output: string, isError?: boolean }} ToolResultBlock
  * @typedef {TextBlock | ToolCallBlock | ToolResultBlock} Block

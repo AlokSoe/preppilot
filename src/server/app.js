@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { runAgentTurn } from '../agent/agent.js';
-import { createTools } from '../agent/tools.js';
-import { ASK_SYSTEM_PROMPT } from '../agent/prompts.js';
+import { createInterviewTools, createTools } from '../agent/tools.js';
+import { ASK_SYSTEM_PROMPT, INTERVIEW_SYSTEM_PROMPT } from '../agent/prompts.js';
+import { roundBriefing } from '../interview/rounds.js';
 import {
   AbortedError,
   InvalidKeyError,
@@ -42,12 +43,17 @@ const SECURITY_HEADERS = {
  *   sessions: import('./sessions.js').MemorySessionStore,
  *   runner: import('../runner/runner.js').CodeRunner,
  *   problems: import('../problems/store.js').ProblemStore,
+ *   progress: import('../progress/progress.js').ProgressStore,
+ *   interview: { rounds: import('../interview/rounds.js').Round[], rubric: string },
  *   staticDir?: string,
  *   log?: (entry: Record<string, unknown>) => void,
  * }} deps
  */
-export function createApp({ kb, provider, sessions, runner, problems, staticDir, log = jsonLog }) {
+export function createApp({ kb, provider, sessions, runner, problems, progress, interview, staticDir, log = jsonLog }) {
+  // Single local user until accounts arrive (M7).
+  const userId = 'local';
   const tools = createTools({ kb });
+  const interviewTools = createInterviewTools({ kb, provider, progress, rubric: interview.rubric, userId });
   /** Open SSE streams, so shutdown can cancel them. @type {Set<AbortController>} */
   const activeStreams = new Set();
   let generationsInFlight = 0;
@@ -57,46 +63,67 @@ export function createApp({ kb, provider, sessions, runner, problems, staticDir,
     .get('/readyz', ({ res }) => sendJson(res, 200, { ok: true, ...kb.stats }))
     .get('/api/topics', ({ res }) => sendJson(res, 200, { topics: kb.topics() }))
 
-    // ---- Ask mode -------------------------------------------------------
+    // ---- Ask + Interview modes (chat sessions) ----------------------------
+    .get('/api/rounds', ({ res }) =>
+      sendJson(res, 200, {
+        rounds: interview.rounds.map(({ id, name, minutes, topics }) => ({ id, name, minutes, topics })),
+      }),
+    )
     .post('/api/sessions', async ({ req, res }) => {
       const body = (await readJson(req)) ?? {};
-      if (body.mode !== undefined && body.mode !== 'ask') {
-        throw new HttpError(400, 'invalid_mode', 'Only "ask" mode exists so far');
+      const mode = body.mode ?? 'ask';
+      if (mode !== 'ask' && mode !== 'interview') throw new HttpError(400, 'invalid_mode', 'mode must be "ask" or "interview"');
+      let roundId = null;
+      if (mode === 'interview') {
+        roundId = Number(body.round);
+        if (!interview.rounds.some((r) => r.id === roundId)) throw new HttpError(400, 'invalid_round', 'Unknown interview round');
       }
-      const session = sessions.create({ mode: 'ask' });
-      sendJson(res, 201, { id: session.id, mode: session.mode });
+      const session = sessions.create({ mode, roundId });
+      sendJson(res, 201, { id: session.id, mode: session.mode, round: session.roundId });
     })
     .get('/api/sessions/:id', ({ res, params }) => {
       const session = getSession(params.id);
-      sendJson(res, 200, { id: session.id, mode: session.mode, messages: toDisplayMessages(session.messages) });
+      sendJson(res, 200, {
+        id: session.id,
+        mode: session.mode,
+        round: session.roundId,
+        messages: toDisplayMessages(session.messages),
+      });
     })
     .post('/api/sessions/:id/messages', async (ctx) => {
       const session = getSession(ctx.params.id);
       const text = requireString(await readJson(ctx.req), 'text', MAX_MESSAGE_CHARS);
       if (session.busy) throw new HttpError(409, 'busy', 'This session is already answering a message');
 
+      const isInterview = session.mode === 'interview';
+      const round = isInterview ? interview.rounds.find((r) => r.id === session.roundId) : undefined;
       session.busy = true;
       sessions.touch(session);
       try {
         await streamSse(ctx, async (sse, signal) => {
           const result = await runAgentTurn({
             provider,
-            system: ASK_SYSTEM_PROMPT,
+            system: isInterview ? INTERVIEW_SYSTEM_PROMPT : ASK_SYSTEM_PROMPT,
             messages: session.messages,
             userText: text,
-            tools,
-            effort: 'low',
+            // The round briefing rides along with the first message only.
+            context: round && session.messages.length === 0 ? roundBriefing(round) : undefined,
+            tools: isInterview ? interviewTools : tools,
+            effort: isInterview ? 'medium' : 'low',
             signal,
             onEvent: (event) => sse.send(event.type, event),
           });
           sse.send('done', { status: result.status, usage: result.usage });
-          ctx.log({ event: 'turn', status: result.status, ...result.usage });
+          ctx.log({ event: 'turn', mode: session.mode, status: result.status, ...result.usage });
         });
       } finally {
         session.busy = false;
         sessions.touch(session);
       }
     })
+
+    // ---- Progress -------------------------------------------------------
+    .get('/api/progress', ({ res }) => sendJson(res, 200, progress.summary(userId, { allTopics: kb.topics() })))
 
     // ---- Code mode ------------------------------------------------------
     .get('/api/problems', ({ res, url }) => {
@@ -153,6 +180,15 @@ export function createApp({ kb, provider, sessions, runner, problems, staticDir,
       await streamSse(ctx, async (sse, signal) => {
         const result = await runner.run({ code, tests: [...problem.visibleTests, ...problem.hiddenTests] }, { signal });
         sse.send('result', publicResult(problem, result));
+        // A submission counts toward the topic's progress: share of tests passed, 1-10.
+        progress.record({
+          userId,
+          kind: 'code',
+          topic: problem.topic,
+          score: Math.max(1, Math.round((10 * result.passed) / Math.max(1, result.total))),
+          question: problem.title,
+          feedback: `${result.passed}/${result.total} tests passed`,
+        });
         const review = await reviewSubmission({
           provider,
           problem,
@@ -332,27 +368,40 @@ export function describeError(err) {
 }
 
 /**
- * History → what the UI shows: user text, and per answer the assistant text
- * plus the tools it used. Tool results stay server-side.
+ * History → what the UI shows: user text, and per answer the assistant text,
+ * the tools it used and any score cards. Other tool results stay server-side.
  * @param {import('../llm/provider.js').Message[]} messages
  */
 export function toDisplayMessages(messages) {
-  /** @type {({ role: 'user', text: string } | { role: 'assistant', text: string, tools: { name: string, input: unknown }[] })[]} */
+  /** @type {({ role: 'user', text: string } | { role: 'assistant', text: string, tools: { name: string, input: unknown }[], scores: object[] })[]} */
   const out = [];
+  const gradeCalls = new Set();
   for (const message of messages) {
     if (message.role === 'user') {
-      const text = message.content.flatMap((b) => (b.type === 'text' ? [b.text] : [])).join('');
+      for (const block of message.content) {
+        if (block.type !== 'tool_result' || block.isError || !gradeCalls.has(block.id)) continue;
+        const last = out.at(-1);
+        try {
+          if (last?.role === 'assistant') last.scores.push(JSON.parse(block.output));
+        } catch {
+          // not JSON: nothing to show
+        }
+      }
+      const text = message.content.flatMap((b) => (b.type === 'text' && !b.hidden ? [b.text] : [])).join('');
       if (text) out.push({ role: 'user', text });
       continue;
     }
     let last = out.at(-1);
     if (last?.role !== 'assistant') {
-      last = { role: 'assistant', text: '', tools: [] };
+      last = { role: 'assistant', text: '', tools: [], scores: [] };
       out.push(last);
     }
     for (const block of message.content) {
       if (block.type === 'text') last.text += block.text;
-      else if (block.type === 'tool_call') last.tools.push({ name: block.name, input: block.input });
+      else if (block.type === 'tool_call') {
+        last.tools.push({ name: block.name, input: block.input });
+        if (block.name === 'grade_answer') gradeCalls.add(block.id);
+      }
     }
   }
   return out;

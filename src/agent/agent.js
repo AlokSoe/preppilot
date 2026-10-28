@@ -10,7 +10,9 @@ import { validate } from './validate.js';
  * @typedef {{ type: 'text', delta: string }
  *   | { type: 'tool_start', id: string, name: string, input: unknown }
  *   | { type: 'tool_end', id: string, name: string, ok: boolean, summary: string }
- *   | { type: 'retry', reason: string }} AgentEvent
+ *   | { type: 'retry', reason: string }
+ *   | { type: 'score', [key: string]: unknown }} AgentEvent
+ *   Tools may emit their own events (e.g. the grader's score card) via ctx.onEvent.
  *
  * @typedef {'done' | 'refused' | 'truncated' | 'iteration_limit'} TurnStatus
  */
@@ -33,6 +35,7 @@ const MAX_TOOL_OUTPUT_CHARS = 20_000;
  *   system: string,
  *   messages: Message[],
  *   userText: string,
+ *   context?: string,
  *   tools: Tool[],
  *   effort?: import('../llm/provider.js').Effort,
  *   onEvent?: (event: AgentEvent) => void,
@@ -46,6 +49,7 @@ export async function runAgentTurn({
   system,
   messages,
   userText,
+  context,
   tools,
   effort,
   onEvent = () => {},
@@ -57,7 +61,12 @@ export async function runAgentTurn({
   /** @type {Usage} */
   const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 
-  messages.push({ role: 'user', content: [{ type: 'text', text: userText }] });
+  // `context` (e.g. an interview round's briefing) goes to the model in the
+  // same message but is marked hidden, so UIs show only what the user typed.
+  messages.push({
+    role: 'user',
+    content: [...(context ? [{ type: 'text', text: context, hidden: true }] : []), { type: 'text', text: userText }],
+  });
 
   for (let iteration = 0; iteration < maxIterations; iteration++) {
     const turn = await streamWithRetry({ provider, system, messages, toolSpecs, effort, signal, onEvent });
@@ -129,7 +138,7 @@ async function runTool(call, toolsByName, { signal, onEvent }) {
   if (errors.length) return fail(`Invalid input: ${errors.join('; ')}. Received: ${JSON.stringify(call.input)}`);
 
   try {
-    let output = String(await tool.run(call.input, { signal }));
+    let output = String(await tool.run(call.input, { signal, onEvent }));
     if (output.length > MAX_TOOL_OUTPUT_CHARS) {
       output = `${output.slice(0, MAX_TOOL_OUTPUT_CHARS)}\n[output truncated at ${MAX_TOOL_OUTPUT_CHARS} characters]`;
     }

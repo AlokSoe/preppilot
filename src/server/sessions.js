@@ -3,7 +3,8 @@ import { randomUUID } from 'node:crypto';
 /**
  * @typedef {{
  *   id: string,
- *   mode: 'ask',
+ *   mode: 'ask' | 'interview',
+ *   roundId: number | null,
  *   messages: import('../llm/provider.js').Message[],
  *   busy: boolean,
  *   createdAt: number,
@@ -28,12 +29,12 @@ export class MemorySessionStore {
     this.now = now;
   }
 
-  /** @param {{ mode: Session['mode'] }} init */
-  create({ mode }) {
+  /** @param {{ mode: Session['mode'], roundId?: number | null }} init */
+  create({ mode, roundId = null }) {
     this.#evict();
     const time = this.now();
     /** @type {Session} */
-    const session = { id: randomUUID(), mode, messages: [], busy: false, createdAt: time, lastActiveAt: time };
+    const session = { id: randomUUID(), mode, roundId, messages: [], busy: false, createdAt: time, lastActiveAt: time };
     this.#sessions.set(session.id, session);
     return session;
   }

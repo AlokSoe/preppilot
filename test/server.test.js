@@ -8,6 +8,7 @@ import { MemorySessionStore } from '../src/server/sessions.js';
 import { CodeRunner } from '../src/runner/runner.js';
 import { ProblemStore } from '../src/problems/store.js';
 import { openDatabase } from '../src/db/database.js';
+import { ProgressStore } from '../src/progress/progress.js';
 import { AbortedError, InvalidKeyError } from '../src/llm/provider.js';
 import { readSse } from '../web/sse.js';
 
@@ -40,12 +41,15 @@ let server;
 let baseUrl;
 
 before(async () => {
+  const db = openDatabase(':memory:');
   const handler = createApp({
     kb,
     provider,
     sessions: new MemorySessionStore(),
     runner: new CodeRunner(),
-    problems: new ProblemStore(openDatabase(':memory:')),
+    problems: new ProblemStore(db),
+    progress: new ProgressStore(db),
+    interview: { rounds: [], rubric: '' },
     staticDir: WEB_DIR,
     log: () => {},
   });
@@ -108,7 +112,7 @@ test('a message streams tool activity, text and done over SSE', async () => {
   const history = await (await fetch(`${baseUrl}/api/sessions/${id}`)).json();
   assert.deepEqual(history.messages, [
     { role: 'user', text: 'what is a closure?' },
-    { role: 'assistant', text: 'A closure remembers.', tools: [{ name: 'search_notes', input: { query: 'closure' } }] },
+    { role: 'assistant', text: 'A closure remembers.', tools: [{ name: 'search_notes', input: { query: 'closure' } }], scores: [] },
   ]);
 });
 

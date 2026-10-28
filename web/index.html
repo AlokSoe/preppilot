@@ -14,35 +14,15 @@
         <div class="brand"><img src="/favicon.svg" alt="" width="22" height="22" /> PrepPilot</div>
         <nav class="tabs" aria-label="Mode">
           <a href="#ask" data-view="ask">Ask</a>
+          <a href="#interview" data-view="interview">Interview</a>
           <a href="#code" data-view="code">Code</a>
+          <a href="#progress" data-view="progress">Progress</a>
         </nav>
-        <button id="new-chat" class="ghost" type="button">New chat</button>
       </header>
 
-      <!-- Ask mode -->
-      <section id="ask-view" class="view ask-view">
-        <main id="log" class="log" role="log">
-          <section id="empty" class="empty">
-            <h1>Ask anything about JavaScript</h1>
-            <p>Answers come from your own notes, with the file and section they came from.</p>
-            <div id="examples" class="examples"></div>
-          </section>
-        </main>
-
-        <form id="composer" class="composer">
-          <label for="input" class="visually-hidden">Your question</label>
-          <textarea
-            id="input"
-            rows="1"
-            maxlength="4000"
-            placeholder="Ask about closures, the event loop, an LRU cache…"
-            autocomplete="off"
-          ></textarea>
-          <button id="send" type="submit">Send</button>
-          <button id="stop" type="button" class="danger" hidden>Stop</button>
-        </form>
-        <p class="hint">Enter to send · Shift+Enter for a new line</p>
-      </section>
+      <!-- Ask and Interview: built by web/chat.js -->
+      <section id="ask-view" class="view chat-view"></section>
+      <section id="interview-view" class="view chat-view" hidden></section>
 
       <!-- Code mode -->
       <section id="code-view" class="view code-view" hidden>
@@ -91,6 +71,9 @@
           </div>
         </div>
       </section>
+
+      <!-- Progress: built by web/progress.js -->
+      <section id="progress-view" class="view progress-view" hidden></section>
     </div>
     <script type="module" src="/app.js"></script>
     <script type="module" src="/code.js"></script>

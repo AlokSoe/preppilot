@@ -1,19 +1,24 @@
 #!/usr/bin/env node
 import { createInterface } from 'node:readline/promises';
 import { parseArgs, styleText } from 'node:util';
-import { loadSources } from '../src/config.js';
+import { databasePath, loadSources } from '../src/config.js';
 import { KnowledgeBase } from '../src/search/knowledge-base.js';
 import { createProvider } from '../src/llm/index.js';
 import { AbortedError, InvalidKeyError, ProviderError } from '../src/llm/provider.js';
 import { runAgentTurn } from '../src/agent/agent.js';
-import { createTools } from '../src/agent/tools.js';
-import { ASK_SYSTEM_PROMPT } from '../src/agent/prompts.js';
+import { createInterviewTools, createTools } from '../src/agent/tools.js';
+import { ASK_SYSTEM_PROMPT, INTERVIEW_SYSTEM_PROMPT } from '../src/agent/prompts.js';
+import { loadRounds, roundBriefing } from '../src/interview/rounds.js';
+import { openDatabase } from '../src/db/database.js';
+import { ProgressStore } from '../src/progress/progress.js';
 
 const HELP = `preppilot — AI interview coach
 
 Usage:
   preppilot ask "<question>"                                One question, answered from your notes
   preppilot chat                                            Multi-turn conversation (Ctrl+C stops an answer, Ctrl+D exits)
+  preppilot interview [--round 4]                           Mock interview, graded 1-10 per answer (no --round: list rounds)
+  preppilot progress                                        Mastery per topic and what to study next
   preppilot code new [--topic promises] [--difficulty medium]   Generate a verified coding problem
   preppilot code list | run <id> <file> | submit <id> <file>     Practise it (submit = all tests + AI review)
   preppilot serve [--port 8080] [--host 127.0.0.1]          Start the web app
@@ -39,6 +44,7 @@ async function main() {
       port: { type: 'string' },
       host: { type: 'string' },
       difficulty: { type: 'string' },
+      round: { type: 'string' },
     },
   });
   const [command, ...rest] = positionals;
@@ -53,6 +59,19 @@ async function main() {
     }
     case 'chat':
       return chat(await createSession(values));
+    case 'interview': {
+      const { rounds } = await loadRounds(await loadSources());
+      const round = rounds.find((r) => r.id === Number(values.round));
+      if (!round) {
+        console.log('Rounds:');
+        for (const r of rounds) console.log(`  --round ${r.id}  ${r.name}${r.minutes ? ` (~${r.minutes} min)` : ''}  ${dim(r.topics.join(', '))}`);
+        return;
+      }
+      const session = await createSession({ ...values, effort: 'medium', mode: 'interview', round });
+      return chat(session, 'Start the interview.');
+    }
+    case 'progress':
+      return printProgress();
     case 'code': {
       const { codeCommand } = await import('../src/cli/code.js');
       return codeCommand(rest, values);
@@ -95,13 +114,20 @@ async function main() {
 
 /**
  * A conversation: history + the agent, rendering events to the terminal.
- * @param {{ effort: string, model?: string }} options
+ * @param {{ effort: string, model?: string, mode?: 'ask' | 'interview',
+ *           round?: import('../src/interview/rounds.js').Round }} options
  */
-async function createSession({ effort, model }) {
+async function createSession({ effort, model, mode = 'ask', round }) {
   if (!['low', 'medium', 'high'].includes(effort)) throw new Error('--effort must be low, medium or high');
-  const kb = await KnowledgeBase.build(await loadSources());
+  const sources = await loadSources();
+  const kb = await KnowledgeBase.build(sources);
   const provider = createProvider({ provider: 'claude', model });
-  const tools = createTools({ kb });
+  let tools = createTools({ kb });
+  if (mode === 'interview') {
+    const { rubric } = await loadRounds(sources);
+    const progress = new ProgressStore(openDatabase(databasePath()));
+    tools = createInterviewTools({ kb, provider, progress, rubric, userId: 'local' });
+  }
   /** @type {import('../src/llm/provider.js').Message[]} */
   const messages = [];
 
@@ -112,9 +138,10 @@ async function createSession({ effort, model }) {
       try {
         const result = await runAgentTurn({
           provider,
-          system: ASK_SYSTEM_PROMPT,
+          system: mode === 'interview' ? INTERVIEW_SYSTEM_PROMPT : ASK_SYSTEM_PROMPT,
           messages,
           userText,
+          context: round && messages.length === 0 ? roundBriefing(round) : undefined,
           tools,
           effort: /** @type {any} */ (effort),
           signal,
@@ -130,21 +157,28 @@ async function createSession({ effort, model }) {
   };
 }
 
-/** @param {Awaited<ReturnType<typeof createSession>>} session */
-async function chat(session) {
+/**
+ * @param {Awaited<ReturnType<typeof createSession>>} session
+ * @param {string} [firstMessage] sent automatically (e.g. to start an interview)
+ */
+async function chat(session, firstMessage) {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   /** @type {AbortController | null} */
   let current = null;
   rl.on('SIGINT', () => (current ? current.abort() : rl.close()));
   rl.on('close', () => current?.abort());
 
-  console.log(dim('PrepPilot chat — ask anything about JavaScript. Ctrl+C stops an answer, Ctrl+D exits.\n'));
+  console.log(dim('PrepPilot — Ctrl+C stops an answer, Ctrl+D exits.\n'));
+  let pending = firstMessage;
   for (;;) {
-    let line;
-    try {
-      line = (await rl.question(styleText('bold', 'you › '))).trim();
-    } catch {
-      break; // closed (Ctrl+D)
+    let line = pending;
+    pending = undefined;
+    if (line === undefined) {
+      try {
+        line = (await rl.question(styleText('bold', 'you › '))).trim();
+      } catch {
+        break; // closed (Ctrl+D)
+      }
     }
     if (!line) continue;
     current = new AbortController();
@@ -156,6 +190,23 @@ async function chat(session) {
     console.log();
   }
   rl.close();
+}
+
+async function printProgress() {
+  const kb = await KnowledgeBase.build(await loadSources());
+  const summary = new ProgressStore(openDatabase(databasePath())).summary('local', { allTopics: kb.topics() });
+  if (!summary.attempts) {
+    console.log('No graded attempts yet. Try: preppilot interview --round 4');
+    return;
+  }
+  console.log(`${summary.attempts} attempts · average ${summary.averageScore}/10\n`);
+  for (const t of summary.topics) {
+    const bar = '█'.repeat(Math.round(t.mastery / 10)).padEnd(10, '·');
+    const review = t.due ? styleText('red', 'due now') : `review ${new Date(t.dueAt).toLocaleDateString()}`;
+    console.log(`  ${t.topic.padEnd(24)} ${bar} ${String(t.mastery).padStart(3)}  last ${t.lastScore}/10  ${dim(review)}`);
+  }
+  if (summary.next.length) console.log(`\nStudy next: ${summary.next.join(', ')}`);
+  if (summary.untried.length) console.log(dim(`Not tried yet: ${summary.untried.join(', ')}`));
 }
 
 /** Streams agent events to the terminal: answer on stdout, tool activity dimmed. */
@@ -177,6 +228,14 @@ class TerminalRenderer {
         process.stderr.write(dim(` → ${event.summary}\n`));
         this.#atLineStart = true;
         break;
+      case 'score': {
+        const color = event.score >= 7 ? 'green' : event.score >= 4 ? 'yellow' : 'red';
+        const lines = [styleText(['bold', color], `Score ${event.score}/10`) + `  ${event.verdict}`];
+        for (const gap of event.gaps ?? []) lines.push(dim(`  missing: ${gap}`));
+        for (const wrong of event.misconceptions ?? []) lines.push(styleText('red', `  incorrect: ${wrong}`));
+        process.stderr.write(`${lines.join('\n')}\n\n`);
+        break;
+      }
       case 'retry':
         this.newline();
         process.stderr.write(dim(`(retrying: ${event.reason})\n`));

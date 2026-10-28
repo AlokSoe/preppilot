@@ -22,6 +22,31 @@ const MIGRATIONS = [
      created_at         TEXT NOT NULL
    );
    CREATE INDEX problems_topic ON problems (topic, difficulty);`,
+
+  `CREATE TABLE attempts (
+     id         INTEGER PRIMARY KEY AUTOINCREMENT,
+     user_id    TEXT NOT NULL,
+     kind       TEXT NOT NULL CHECK (kind IN ('interview', 'code')),
+     topic      TEXT NOT NULL,
+     score      INTEGER NOT NULL CHECK (score BETWEEN 1 AND 10),
+     question   TEXT NOT NULL DEFAULT '',
+     feedback   TEXT NOT NULL DEFAULT '',
+     created_at TEXT NOT NULL
+   );
+   CREATE INDEX attempts_user ON attempts (user_id, id);
+   CREATE TABLE mastery (
+     user_id       TEXT NOT NULL,
+     topic         TEXT NOT NULL,
+     mastery       REAL NOT NULL,
+     ease          REAL NOT NULL,
+     interval_days REAL NOT NULL,
+     repetitions   INTEGER NOT NULL,
+     attempts      INTEGER NOT NULL,
+     last_score    INTEGER NOT NULL,
+     due_at        TEXT NOT NULL,
+     updated_at    TEXT NOT NULL,
+     PRIMARY KEY (user_id, topic)
+   );`,
 ];
 
 /**

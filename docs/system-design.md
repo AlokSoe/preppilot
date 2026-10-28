@@ -61,7 +61,7 @@ code in a sandbox, and tracks your weak spots until they're strong."*
 | FR-2 | Answer questions using retrieved notes; every factual answer cites `file:heading`. |
 | FR-3 | Stream responses token-by-token to the browser. |
 | FR-4 | Interview mode follows a round from `28-mock-interview` (question order, time box, rubric). |
-| FR-5 | Grade free-text answers on a 1–5 rubric with written feedback and a "what an ideal answer includes" list. |
+| FR-5 | Grade free-text answers 1–10 against the rubric in `28-mock-interview` (correctness, depth, clarity, internal understanding, senior-level thinking), with written feedback and an ideal answer. |
 | FR-6 | Run user-submitted JavaScript against hidden tests with a time and memory limit; return pass/fail per test, stdout, and errors. |
 | FR-7 | Build mode: clarify requirements → propose design → write code + tests → run tests → fix (max 3 iterations) → explain. |
 | FR-8 | Persist sessions, messages, attempts and per-topic mastery per user. |
@@ -242,7 +242,7 @@ Key details:
 | `search_notes` | `query`, `topic?`, `k?` | chunks with `path#heading` | Read-only. |
 | `get_round` | `roundId` | questions, time box, rubric | Reads `28-mock-interview`. |
 | `run_code` | `code`, `tests` | per-test pass/fail, stdout, error, duration | Sandboxed (§9.5). |
-| `grade_answer` | `question`, `answer`, `rubricId` | `{score 1–5, strengths[], gaps[], idealAnswer}` | Uses structured output so the result is always valid JSON. |
+| `grade_answer` | `question`, `answer`, `topic` | `{score 1–10, criteria, verdict, strengths[], gaps[], misconceptions[], idealAnswer, followUps[]}` | Runs the separate grader (structured output), records the attempt, emits a score card. |
 | `get_progress` | — | mastery per topic, due topics | Read-only. |
 | `record_attempt` | `topic`, `score`, `kind` | ok | Updates mastery. Only tool that writes. |
 
@@ -305,8 +305,8 @@ the host process. It is fine for convenience, not for isolation.
 
 ### 9.6 Grader
 
-- Input: question, user answer, rubric (from `28-mock-interview` when available, else a default
-  5-level rubric), and the relevant notes from `search_notes`.
+- Input: question, user answer, rubric (parsed from `28-mock-interview` when available, else a
+  built-in 1–10 rubric), and the relevant notes from `search_notes`.
 - Output via **structured outputs** (`output_config.format` with a JSON schema), so the result
   is always parseable.
 - **Calibration:** a small eval set (30 question/answer pairs with scores we agree on) is run
@@ -586,4 +586,5 @@ supported provider** (§9.8), and the owner of the deployment pays nothing for t
 | 2026-10-28 | Publish the CLI? | Yes — `npx preppilot`, thin client over the hosted API (§12.4). |
 | 2026-10-28 | Hosting | Free: Oracle Cloud Always Free VM + Docker Compose + Caddy; Render free as fallback (§12.1). Daily spend cap on model usage (§12.2). |
 | 2026-10-28 | Who pays for model usage? | Users bring their own API key (encrypted at rest, validated, never returned or logged). Small demo tier on the owner's key so visitors can try it first (§12.2). |
+| 2026-10-29 | Grading scale | 1–10 with five criteria, matching the rubric already in the notes (`28-mock-interview`), instead of the 1–5 scale first drafted. |
 | 2026-10-28 | Which AI providers? | Any, via a provider interface (§9.8). Claude adapter first (M2); OpenAI and Gemini in M9 after the core works end to end. |

@@ -218,3 +218,47 @@ with hidden tests and a streamed AI review, plus Code mode in the web UI and CLI
 > 3. **Schema-stripping bug caught in review:** my first `toApiSchema` stripped unsupported keywords
 >    like `minimum` everywhere — including a *property named* `minimum`. Fixed by treating keys
 >    under `properties` as names, not keywords, and added a test.
+
+---
+
+## M5 — Interview mode, grader, progress
+
+**What I built:** a mock-interview mode driven by the rounds and rubric in my own notes, a
+separate grader that scores every answer 1–10 with structured output, SM-2 spaced repetition per
+topic, and Progress pages in the web UI and CLI.
+
+### Questions you can expect
+
+**"Why is grading a separate model call instead of the interviewer scoring itself?"**
+> Separation of concerns, like a test runner separate from the code under test. The interviewer is
+> conversational and could drift toward being generous with its own questions. The grader gets only
+> the question, the answer, the rubric and the reference notes, and must return JSON matching a
+> schema — so scores are consistent, comparable over time, and stored as data. The interviewer
+> calls it as a tool (`grade_answer`), and the tool also records progress, so the model can't
+> "forget" to save a score.
+
+**"How do you get structured data out of an LLM reliably?"**
+> Structured outputs: the API constrains generation to my JSON schema. I still validate the result
+> locally, because the API doesn't enforce numeric ranges like `score` 1–10 — my adapter strips those
+> keywords before sending and my validator checks them after.
+
+**"Explain your spaced repetition."**
+> Simplified SM-2. A score of 7+ (the rubric's "would pass a mid-to-senior loop") grows the review
+> interval: 1 day, 3 days, then interval × ease. Below 7 resets it to 1 day. Ease drifts down after
+> weak answers (minimum 1.3) so hard topics come back more often. Mastery is an exponential moving
+> average of scores, so one lucky answer doesn't mark a topic as mastered. "Study next" puts overdue
+> topics first, then the weakest.
+
+**"How does the interviewer know which round to run without changing the system prompt?"**
+> The round briefing travels as a hidden text block in the first user message. The system prompt
+> stays byte-identical across rounds, so prompt caching keeps working, and the UI hides the
+> briefing because the block is marked `hidden`.
+
+**"How do you keep progress accurate when two note collections name topics differently?"**
+> A canonical topic map (`scope-and-closures` → `closures`, `this-keyword` → `this`, ...) applied on
+> every write, so attempts from either source land on one topic.
+
+### Real bug I hit
+> "Study next" ranked a strong topic above a weak one when neither was due yet, because the sort
+> compared exact due timestamps first — a millisecond apart. Fix: only overdue topics are ordered by
+> due time; the rest are ordered by mastery. Added a test for "due beats weaker-but-not-due".
