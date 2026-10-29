@@ -206,6 +206,11 @@ export function toProviderError(err) {
   if (err instanceof OpenAI.APIConnectionError || err instanceof OpenAI.InternalServerError) {
     return new ProviderDownError('Could not reach the AI provider, or it is overloaded. Try again shortly.', { cause: err });
   }
+  // Gemini's OpenAI-compatible endpoint answers a bad key with 400
+  // ("Please pass a valid API key") instead of 401, so check for that too.
+  if (err instanceof OpenAI.BadRequestError && /api key/i.test(err.message)) {
+    return new InvalidKeyError('Your API key is invalid or revoked.', { cause: err });
+  }
   if (err instanceof OpenAI.APIError) return new ProviderError(`AI provider error ${err.status ?? ''}: ${err.message}`, { cause: err });
   if (err instanceof OpenAI.OpenAIError) return new ProviderError(err.message, { cause: err });
   return err;

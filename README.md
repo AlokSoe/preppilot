@@ -53,6 +53,22 @@ export ANTHROPIC_API_KEY=sk-ant-...
 npm start                                            # http://127.0.0.1:8080
 ```
 
+### Free options (no paid API key)
+
+Claude gives the best results but its API is paid. Two free alternatives:
+
+```bash
+# Google Gemini free tier: key from https://aistudio.google.com (no card). Free tier = Flash models only,
+# small daily limits, and Google may use free-tier data to improve its products.
+export PREPPILOT_PROVIDER=gemini GEMINI_API_KEY=... GEMINI_MODEL=gemini-flash-latest
+
+# Fully local and private with Ollama (https://ollama.com): free, quality depends on the model.
+ollama pull qwen3:8b
+export PREPPILOT_PROVIDER=openai OPENAI_BASE_URL=http://localhost:11434/v1 OPENAI_API_KEY=ollama OPENAI_MODEL=qwen3:8b
+```
+
+Model names change often: check the exact IDs in AI Studio, or with `ollama list`.
+
 ### CLI
 
 ```bash
@@ -91,6 +107,7 @@ docker compose up -d --build
 | `DATABASE_PATH` | SQLite file (default `~/.preppilot/preppilot.db`). |
 | `RUNNER_URL`, `RUNNER_TOKEN` | Use the separate code-runner service. |
 | `DEMO_MESSAGES_PER_USER`, `DEMO_DAILY_TOKENS` | Demo tier limits. |
+| `PREPPILOT_PROVIDER` | `claude` (default), `gemini` or `openai` (also any OpenAI-compatible server via `OPENAI_BASE_URL`, e.g. Ollama). |
 | `PREPPILOT_MODEL` | Claude model override (default `claude-opus-5-5`). |
 | `OPENAI_MODEL`, `GEMINI_MODEL` | Models for users who bring an OpenAI or Gemini key (defaults `gpt-5.5`, `gemini-3.1-pro-preview`; check the providers' current model lists). |
 | `TRUST_PROXY=true` | Behind Caddy or nginx: read the client IP from `X-Forwarded-For`. |

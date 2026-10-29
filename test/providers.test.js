@@ -222,3 +222,47 @@ test('factory: every listed provider can be created', () => {
   for (const name of PROVIDERS) assert.equal(createProvider({ provider: name, apiKey: 'test-key-0123456789' }).name, name);
   assert.throws(() => createProvider({ provider: 'nope' }), /Unknown provider/);
 });
+
+test('PREPPILOT_PROVIDER picks the local default provider; its own key decides availability', async () => {
+  const { defaultProvider, hasDefaultKey } = await import('../src/llm/index.js');
+  const saved = { ...process.env };
+  try {
+    delete process.env.PREPPILOT_PROVIDER;
+    delete process.env.ANTHROPIC_API_KEY;
+    assert.equal(defaultProvider().name, 'claude');
+    assert.equal(hasDefaultKey(), false);
+
+    process.env.PREPPILOT_PROVIDER = 'gemini';
+    delete process.env.GEMINI_API_KEY;
+    // No key: a clear error naming the right variable, not a crash at construction.
+    await assert.rejects(defaultProvider().validateKey(), /Set GEMINI_API_KEY/);
+    process.env.GEMINI_API_KEY = 'test-key-0123456789';
+    assert.equal(defaultProvider().name, 'gemini');
+    assert.equal(hasDefaultKey(), true);
+
+    process.env.PREPPILOT_PROVIDER = 'openai';
+    process.env.OPENAI_BASE_URL = 'http://localhost:11434/v1';
+    process.env.OPENAI_API_KEY = 'ollama';
+    const local = defaultProvider();
+    assert.equal(local.client.baseURL, 'http://localhost:11434/v1');
+    assert.equal(local.sendEffort, false, 'no OpenAI-only parameters to other servers');
+
+    process.env.PREPPILOT_PROVIDER = 'nope';
+    assert.throws(() => defaultProvider(), /PREPPILOT_PROVIDER/);
+  } finally {
+    for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+    Object.assign(process.env, saved);
+  }
+});
+
+test('Gemini: a bad key comes back as HTTP 400, still mapped to InvalidKeyError', async () => {
+  // The body Google's endpoint actually returns (seen in a live check).
+  const body = { error: { code: 400, message: 'Please pass a valid API key', status: 'INVALID_ARGUMENT' } };
+  const error = new OpenAI.BadRequestError(400, body.error, undefined, new Headers());
+  const provider = new OpenAICompatibleProvider({
+    name: 'gemini',
+    model: 'm',
+    client: /** @type {any} */ ({ models: { list: async () => Promise.reject(error) } }),
+  });
+  await assert.rejects(provider.validateKey(), InvalidKeyError);
+});

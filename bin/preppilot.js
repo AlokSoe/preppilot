@@ -3,7 +3,7 @@ import { createInterface } from 'node:readline/promises';
 import { parseArgs, styleText } from 'node:util';
 import { databasePath, loadSources } from '../src/config.js';
 import { KnowledgeBase } from '../src/search/knowledge-base.js';
-import { createProvider } from '../src/llm/index.js';
+import { defaultProvider } from '../src/llm/index.js';
 import { AbortedError, InvalidKeyError, ProviderError } from '../src/llm/provider.js';
 import { runAgentTurn } from '../src/agent/agent.js';
 import { writeFile } from 'node:fs/promises';
@@ -36,7 +36,9 @@ Options for ask / chat:
   --effort low|medium|high    How hard the model thinks (default: low)
   --model <id>                Model ID (default: claude-opus-5-5)
 
-Needs ANTHROPIC_API_KEY for ask / chat / serve.
+AI provider: Claude by default (ANTHROPIC_API_KEY). Free options:
+  PREPPILOT_PROVIDER=gemini  GEMINI_API_KEY=...  GEMINI_MODEL=<a Flash model>   (Google AI Studio free tier)
+  PREPPILOT_PROVIDER=openai  OPENAI_BASE_URL=http://localhost:11434/v1  OPENAI_API_KEY=ollama  OPENAI_MODEL=<model>   (Ollama, local)
 `;
 
 async function main() {
@@ -148,7 +150,7 @@ async function createSession({ effort, model, mode = 'ask', round }) {
   if (!['low', 'medium', 'high'].includes(effort)) throw new Error('--effort must be low, medium or high');
   const sources = await loadSources();
   const kb = await KnowledgeBase.build(sources);
-  const provider = createProvider({ provider: 'claude', model });
+  const provider = defaultProvider({ model });
   let tools = createTools({ kb });
   if (mode === 'interview') {
     const { rubric } = await loadRounds(sources);
@@ -323,7 +325,11 @@ function fail(message) {
 
 main().catch((err) => {
   if (err instanceof InvalidKeyError) {
-    console.error(`${err.message}\nGet a key at https://console.anthropic.com and run: export ANTHROPIC_API_KEY=sk-ant-...`);
+    const help = {
+      gemini: 'Get a free key at https://aistudio.google.com and run: export GEMINI_API_KEY=...',
+      openai: 'Set OPENAI_API_KEY (any value, e.g. "ollama", for a local Ollama server).',
+    }[process.env.PREPPILOT_PROVIDER ?? ''];
+    console.error(`${err.message}\n${help ?? 'Get a key at https://console.anthropic.com and run: export ANTHROPIC_API_KEY=sk-ant-...'}`);
   } else if (err instanceof ProviderError) {
     console.error(err.message);
   } else {

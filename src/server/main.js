@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { databasePath, loadSources } from '../config.js';
 import { KnowledgeBase } from '../search/knowledge-base.js';
-import { createProvider } from '../llm/index.js';
+import { createProvider, defaultProvider, hasDefaultKey } from '../llm/index.js';
 import { openDatabase } from '../db/database.js';
 import { CodeRunner } from '../runner/runner.js';
 import { RemoteRunner } from '../runner/service.js';
@@ -30,7 +30,8 @@ export async function startServer({ port = 8080, host = '127.0.0.1' } = {}) {
   const env = process.env;
   const model = env.PREPPILOT_MODEL;
   // The server's own key: every request in single-user mode, the demo tier with accounts.
-  const ownerProvider = env.ANTHROPIC_API_KEY ? createProvider({ provider: 'claude', model }) : null;
+  // PREPPILOT_PROVIDER picks it (claude, openai, gemini); its key comes from the env.
+  const ownerProvider = hasDefaultKey() ? defaultProvider({ model }) : null;
 
   // AUTH=accounts: sign-up/login, users bring their own keys, demo tier on the owner's key.
   const accounts =
@@ -50,7 +51,7 @@ export async function startServer({ port = 8080, host = '127.0.0.1' } = {}) {
 
   const handler = createApp({
     kb,
-    provider: ownerProvider ?? createProvider({ provider: 'claude', model }),
+    provider: ownerProvider ?? defaultProvider({ model }),
     accounts,
     trustProxy: env.TRUST_PROXY === 'true',
     sessions: new MemorySessionStore(),

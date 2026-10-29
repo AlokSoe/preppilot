@@ -2,7 +2,7 @@ import { access, readFile, writeFile } from 'node:fs/promises';
 import { styleText } from 'node:util';
 import { databasePath, loadSources } from '../config.js';
 import { openDatabase } from '../db/database.js';
-import { createProvider } from '../llm/index.js';
+import { defaultProvider } from '../llm/index.js';
 import { DIFFICULTIES, generateProblem } from '../problems/generator.js';
 import { publicResult, reviewSubmission } from '../problems/review.js';
 import { ProblemStore } from '../problems/store.js';
@@ -31,7 +31,7 @@ export async function codeCommand([sub, ...rest], options) {
       if (!DIFFICULTIES.includes(difficulty)) throw new Error(`--difficulty must be one of ${DIFFICULTIES.join(', ')}`);
       const kb = await KnowledgeBase.build(await loadSources());
       const problem = await generateProblem({
-        provider: createProvider({ model: options.model }),
+        provider: defaultProvider({ model: options.model }),
         runner,
         store,
         kb,
@@ -68,7 +68,7 @@ export async function codeCommand([sub, ...rest], options) {
 
       console.log(`\n${styleText('bold', 'Review')}\n`);
       const review = await reviewSubmission({
-        provider: createProvider({ model: options.model }),
+        provider: defaultProvider({ model: options.model }),
         problem,
         code,
         result,
