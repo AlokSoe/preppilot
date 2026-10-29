@@ -58,6 +58,7 @@ npm start                                            # http://127.0.0.1:8080
 Claude gives the best results but its API is paid. Two free alternatives:
 
 ```bash
+# Easiest: put these in a .env file in the project (git-ignored); npm start and npm run cli read it.
 # Google Gemini free tier: key from https://aistudio.google.com (no card). Free tier = Flash models only,
 # small daily limits, and Google may use free-tier data to improve its products.
 export PREPPILOT_PROVIDER=gemini GEMINI_API_KEY=... GEMINI_MODEL=gemini-flash-latest

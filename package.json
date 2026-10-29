@@ -12,10 +12,11 @@
     "web"
   ],
   "scripts": {
-    "start": "node bin/preppilot.js serve",
+    "start": "node --env-file-if-exists=.env bin/preppilot.js serve",
     "test": "node --test",
     "search": "node bin/preppilot.js search",
-    "prepublishOnly": "npm test"
+    "prepublishOnly": "npm test",
+    "cli": "node --env-file-if-exists=.env bin/preppilot.js"
   },
   "engines": {
     "node": ">=26"
