@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
  *   id: string,
  *   mode: 'ask' | 'interview' | 'build',
  *   roundId: number | null,
+ *   userId: string,
  *   messages: import('../llm/provider.js').Message[],
  *   busy: boolean,
  *   createdAt: number,
@@ -29,12 +30,12 @@ export class MemorySessionStore {
     this.now = now;
   }
 
-  /** @param {{ mode: Session['mode'], roundId?: number | null }} init */
-  create({ mode, roundId = null }) {
+  /** @param {{ mode: Session['mode'], roundId?: number | null, userId?: string }} init */
+  create({ mode, roundId = null, userId = 'local' }) {
     this.#evict();
     const time = this.now();
     /** @type {Session} */
-    const session = { id: randomUUID(), mode, roundId, messages: [], busy: false, createdAt: time, lastActiveAt: time };
+    const session = { id: randomUUID(), mode, roundId, userId, messages: [], busy: false, createdAt: time, lastActiveAt: time };
     this.#sessions.set(session.id, session);
     return session;
   }

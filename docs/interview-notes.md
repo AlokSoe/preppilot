@@ -295,3 +295,55 @@ passing code downloads as one file that runs with plain `node` (tests as `node:t
 > subprocess and should report over IPC. Clearing that variable in the child's env fixed it.
 > **Lesson:** child processes inherit the parent's environment — the same reason my sandbox starts
 > children with an empty env.
+
+---
+
+## M7 — Accounts, bring-your-own-key, limits
+
+**What I built:** optional accounts (`AUTH=accounts`): sign-up/login with scrypt-hashed passwords and
+HttpOnly session cookies, users' API keys validated then encrypted with AES-256-GCM, a free demo tier
+on the owner's key with daily limits, rate limiting, usage metering, CSRF protection and log redaction.
+Without `AUTH=accounts` it stays a single-user local app.
+
+### Questions you can expect
+
+**"How do you store passwords?"**
+> scrypt with a random 16-byte salt per user. scrypt is memory-hard, so GPU brute force is expensive.
+> Verification uses `timingSafeEqual`, and login runs scrypt even when the email doesn't exist, so
+> response time doesn't reveal which emails have accounts.
+
+**"How do sessions work?"**
+> A random 32-byte token in an `HttpOnly; SameSite=Lax; Secure` cookie, so JavaScript can't read it
+> (XSS can't steal it). The database stores only the token's SHA-256, so a leaked DB doesn't leak
+> live sessions. Sessions expire after 30 days; logout deletes the row server-side.
+
+**"How do you protect users' API keys?"**
+> Checked with a zero-token call before saving, then encrypted with AES-256-GCM: a fresh random IV
+> per encryption, and the auth tag detects tampering. The encryption key is derived with HKDF from a
+> secret that only exists in the environment — a stolen database alone is useless. The key is
+> decrypted in memory for one request, never returned (UI shows the last 4 characters), never logged
+> (a redaction layer strips anything key-shaped), and never sent to the code sandbox.
+
+**"How do you stop CSRF?"**
+> Three layers: `SameSite=Lax` cookies aren't sent on cross-site POSTs; every state-changing request
+> must be JSON, which an HTML form can't send without a CORS preflight; and the server rejects any
+> POST/DELETE whose `Origin` header isn't its own host.
+
+**"How do you meter usage across very different features?"**
+> A decorator: `withMetering(provider, onUsage)` wraps whichever provider the request uses and records
+> tokens for every call — chat turns, the grader running inside a tool, the problem generator — without
+> any of them knowing. Classic Decorator pattern; also how I'd add tracing.
+
+**"How do you keep a public demo from bankrupting you?"**
+> Users bring their own key. The demo tier on my key allows a few messages per user per day, a global
+> daily token cap, and blocks the expensive features (Build mode, problem generation). Plus per-IP rate
+> limits on login/sign-up and per-user limits on model calls. The limiter is in memory (one instance);
+> with several instances it moves to Redis with INCR + EXPIRE.
+
+**"Why can't a user open someone else's session?"**
+> Every chat session has an owner; a session that isn't yours returns 404 — the same response as a
+> missing one, so IDs can't be probed.
+
+### Things I'd add next
+> Email verification and password reset; key rotation (re-encrypt with a new server secret); an admin
+> usage dashboard; Postgres + Redis when running more than one instance.

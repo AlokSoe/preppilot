@@ -9,6 +9,7 @@
  *   params: Record<string, string>,
  *   requestId: string,
  *   log: (fields: Record<string, unknown>) => void,
+ *   user: { id: string, email: string | null } | null,
  * }} Context
  *
  * @typedef {(ctx: Context, next: () => Promise<void>) => unknown} Middleware

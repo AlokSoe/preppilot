@@ -9,6 +9,9 @@ import { CodeRunner } from '../runner/runner.js';
 import { ProblemStore } from '../problems/store.js';
 import { ProgressStore } from '../progress/progress.js';
 import { loadRounds } from '../interview/rounds.js';
+import { AccountStore } from '../auth/accounts.js';
+import { SecretBox } from '../auth/crypto.js';
+import { UsageStore } from './usage.js';
 import { createApp } from './app.js';
 import { MemorySessionStore } from './sessions.js';
 
@@ -23,9 +26,32 @@ export async function startServer({ port = 8080, host = '127.0.0.1' } = {}) {
   const sources = await loadSources();
   const kb = await KnowledgeBase.build(sources);
   const db = openDatabase(databasePath());
+  const env = process.env;
+  const model = env.PREPPILOT_MODEL;
+  // The server's own key: every request in single-user mode, the demo tier with accounts.
+  const ownerProvider = env.ANTHROPIC_API_KEY ? createProvider({ provider: 'claude', model }) : null;
+
+  // AUTH=accounts: sign-up/login, users bring their own keys, demo tier on the owner's key.
+  const accounts =
+    env.AUTH === 'accounts'
+      ? {
+          store: new AccountStore(db, new SecretBox(env.KEY_ENCRYPTION_SECRET ?? '')),
+          usage: new UsageStore(db),
+          providerFor: ({ provider, apiKey }) => createProvider({ provider, apiKey, model }),
+          demoProvider: env.DEMO_ENABLED === 'false' ? null : ownerProvider,
+          limits: {
+            demoMessagesPerUser: Number(env.DEMO_MESSAGES_PER_USER ?? 10),
+            demoDailyTokens: Number(env.DEMO_DAILY_TOKENS ?? 400_000),
+          },
+          cookieSecure: env.COOKIE_SECURE !== 'false',
+        }
+      : undefined;
+
   const handler = createApp({
     kb,
-    provider: createProvider({ provider: 'claude', model: process.env.PREPPILOT_MODEL }),
+    provider: ownerProvider ?? createProvider({ provider: 'claude', model }),
+    accounts,
+    trustProxy: env.TRUST_PROXY === 'true',
     sessions: new MemorySessionStore(),
     runner: new CodeRunner({ concurrency: Number(process.env.RUNNER_CONCURRENCY ?? 4) }),
     problems: new ProblemStore(db),
@@ -44,6 +70,7 @@ export async function startServer({ port = 8080, host = '127.0.0.1' } = {}) {
     JSON.stringify({
       level: 'info',
       msg: 'listening',
+      auth: accounts ? 'accounts' : 'single-user',
       url: `http://${address.address}:${address.port}`,
       files: kb.stats.files,
       chunks: kb.stats.chunks,

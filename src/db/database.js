@@ -47,6 +47,40 @@ const MIGRATIONS = [
      updated_at    TEXT NOT NULL,
      PRIMARY KEY (user_id, topic)
    );`,
+
+  `CREATE TABLE users (
+     id            TEXT PRIMARY KEY,
+     email         TEXT NOT NULL UNIQUE COLLATE NOCASE,
+     password_hash TEXT NOT NULL,
+     created_at    TEXT NOT NULL
+   );
+   CREATE TABLE auth_sessions (
+     token_hash TEXT PRIMARY KEY,  -- SHA-256 of the cookie token, never the token itself
+     user_id    TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+     expires_at TEXT NOT NULL,
+     created_at TEXT NOT NULL
+   );
+   CREATE INDEX auth_sessions_user ON auth_sessions (user_id);
+   CREATE TABLE api_keys (
+     user_id      TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+     provider     TEXT NOT NULL,
+     ciphertext   TEXT NOT NULL,  -- AES-256-GCM
+     iv           TEXT NOT NULL,
+     auth_tag     TEXT NOT NULL,
+     last4        TEXT NOT NULL,
+     validated_at TEXT NOT NULL,
+     created_at   TEXT NOT NULL,
+     PRIMARY KEY (user_id, provider)
+   );
+   CREATE TABLE usage_daily (
+     user_id       TEXT NOT NULL,
+     day           TEXT NOT NULL,  -- YYYY-MM-DD (UTC)
+     tier          TEXT NOT NULL CHECK (tier IN ('demo', 'own')),
+     requests      INTEGER NOT NULL DEFAULT 0,
+     input_tokens  INTEGER NOT NULL DEFAULT 0,
+     output_tokens INTEGER NOT NULL DEFAULT 0,
+     PRIMARY KEY (user_id, day, tier)
+   );`,
 ];
 
 /**

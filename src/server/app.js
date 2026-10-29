@@ -14,6 +14,10 @@ import {
 import { DIFFICULTIES, GenerationError, generateProblem } from '../problems/generator.js';
 import { publicResult, reviewSubmission } from '../problems/review.js';
 import { publicProblem } from '../problems/store.js';
+import { AccountError } from '../auth/accounts.js';
+import { PROVIDERS } from '../llm/index.js';
+import { withMetering } from '../llm/meter.js';
+import { RateLimiter } from './rate-limit.js';
 import { HttpError, compose, readJson, sendJson } from './http.js';
 import { Router } from './router.js';
 import { openSse } from './sse.js';
@@ -25,6 +29,11 @@ const MAX_MESSAGE_CHARS = 4000;
 const CHAT_MODES = ['ask', 'interview', 'build'];
 const MAX_CODE_CHARS = 50_000;
 const MAX_CONCURRENT_GENERATIONS = 2;
+const SESSION_COOKIE = 'pp_session';
+const SESSION_MAX_AGE = 30 * 24 * 60 * 60;
+const LOCAL_USER = { id: 'local', email: null };
+/** Features that cost the most: only with the user's own key. */
+const DEMO_DISABLED = new Set(['build', 'generate']);
 
 const SECURITY_HEADERS = {
   'Content-Security-Policy':
@@ -46,15 +55,39 @@ const SECURITY_HEADERS = {
  *   problems: import('../problems/store.js').ProblemStore,
  *   progress: import('../progress/progress.js').ProgressStore,
  *   interview: { rounds: import('../interview/rounds.js').Round[], rubric: string },
+ *   accounts?: {
+ *     store: import('../auth/accounts.js').AccountStore,
+ *     usage: import('./usage.js').UsageStore,
+ *     providerFor: (key: { provider: string, apiKey: string }) => import('../llm/provider.js').LLMProvider,
+ *     demoProvider: import('../llm/provider.js').LLMProvider | null,
+ *     limits?: { demoMessagesPerUser?: number, demoDailyTokens?: number },
+ *     cookieSecure?: boolean,
+ *   },
+ *   trustProxy?: boolean,
  *   staticDir?: string,
  *   log?: (entry: Record<string, unknown>) => void,
  * }} deps
+ *   Without `accounts` the server is single-user (local use): everyone is
+ *   the "local" user and `provider` is used for every model call.
  */
-export function createApp({ kb, provider, sessions, runner, problems, progress, interview, staticDir, log = jsonLog }) {
-  // Single local user until accounts arrive (M7).
-  const userId = 'local';
+export function createApp({
+  kb,
+  provider,
+  sessions,
+  runner,
+  problems,
+  progress,
+  interview,
+  accounts,
+  trustProxy = false,
+  staticDir,
+  log: rawLog = jsonLog,
+}) {
+  /** Every log line goes through redaction: no keys, passwords or cookies in logs. */
+  const log = (entry) => rawLog(redact(entry));
   const tools = createTools({ kb });
-  const interviewTools = createInterviewTools({ kb, provider, progress, rubric: interview.rubric, userId });
+  const limiter = new RateLimiter();
+  const limits = { demoMessagesPerUser: 10, demoDailyTokens: 400_000, ...accounts?.limits };
   /** Open SSE streams, so shutdown can cancel them. @type {Set<AbortController>} */
   const activeStreams = new Set();
   let generationsInFlight = 0;
@@ -64,14 +97,74 @@ export function createApp({ kb, provider, sessions, runner, problems, progress, 
     .get('/readyz', ({ res }) => sendJson(res, 200, { ok: true, ...kb.stats }))
     .get('/api/topics', ({ res }) => sendJson(res, 200, { topics: kb.topics() }))
 
+    // ---- Accounts and keys (AUTH=accounts) -------------------------------
+    .get('/api/me', (ctx) => sendJson(ctx.res, 200, describeMe(ctx)))
+    .post('/api/auth/signup', async (ctx) => {
+      const { store } = requireAccounts();
+      limit(ctx, `auth:${clientIp(ctx)}`, 10, 60_000);
+      const body = (await readJson(ctx.req)) ?? {};
+      const user = await store.signUp(body.email, body.password);
+      setSessionCookie(ctx, store.createSession(user.id));
+      ctx.log({ event: 'signup', userId: user.id });
+      sendJson(ctx.res, 201, { user });
+    })
+    .post('/api/auth/login', async (ctx) => {
+      const { store } = requireAccounts();
+      limit(ctx, `auth:${clientIp(ctx)}`, 10, 60_000);
+      const body = (await readJson(ctx.req)) ?? {};
+      const user = await store.logIn(body.email, body.password);
+      if (!user) throw new HttpError(401, 'invalid_credentials', 'Wrong email or password.');
+      setSessionCookie(ctx, store.createSession(user.id));
+      sendJson(ctx.res, 200, { user });
+    })
+    .post('/api/auth/logout', (ctx) => {
+      const { store } = requireAccounts();
+      const token = readCookie(ctx.req, SESSION_COOKIE);
+      if (token) store.deleteSession(token);
+      ctx.res.setHeader('Set-Cookie', sessionCookie('', 0));
+      sendJson(ctx.res, 200, { ok: true });
+    })
+    .post('/api/keys', async (ctx) => {
+      const { store, providerFor } = requireAccounts();
+      const user = requireUser(ctx);
+      limit(ctx, `keys:${user.id}`, 10, 60_000);
+      const body = (await readJson(ctx.req)) ?? {};
+      const providerName = body.provider ?? 'claude';
+      if (!PROVIDERS.includes(providerName)) {
+        throw new HttpError(400, 'invalid_provider', `provider must be one of ${PROVIDERS.join(', ')}`);
+      }
+      const apiKey = typeof body.apiKey === 'string' ? body.apiKey.trim() : '';
+      if (apiKey.length < 20 || apiKey.length > 300 || /\s/.test(apiKey)) {
+        throw new HttpError(400, 'invalid_key_format', 'That does not look like an API key.');
+      }
+      // Check the key with a call that costs no tokens before storing it.
+      try {
+        await providerFor({ provider: providerName, apiKey }).validateKey();
+      } catch (err) {
+        const { code, message } = describeError(err);
+        if (code === 'invalid_key') throw new HttpError(400, 'invalid_key', 'The provider rejected that key.');
+        throw new HttpError(502, 'key_check_failed', `Could not check the key right now: ${message}`);
+      }
+      store.setApiKey(user.id, providerName, apiKey);
+      ctx.log({ event: 'key_added', userId: user.id, provider: providerName });
+      sendJson(ctx.res, 200, { keys: store.listKeys(user.id) });
+    })
+    .delete('/api/keys/:provider', (ctx) => {
+      const { store } = requireAccounts();
+      const user = requireUser(ctx);
+      store.deleteKey(user.id, ctx.params.provider);
+      sendJson(ctx.res, 200, { keys: store.listKeys(user.id) });
+    })
+
     // ---- Ask + Interview modes (chat sessions) ----------------------------
     .get('/api/rounds', ({ res }) =>
       sendJson(res, 200, {
         rounds: interview.rounds.map(({ id, name, minutes, topics }) => ({ id, name, minutes, topics })),
       }),
     )
-    .post('/api/sessions', async ({ req, res }) => {
-      const body = (await readJson(req)) ?? {};
+    .post('/api/sessions', async (ctx) => {
+      const user = requireUser(ctx);
+      const body = (await readJson(ctx.req)) ?? {};
       const mode = body.mode ?? 'ask';
       if (!CHAT_MODES.includes(mode)) throw new HttpError(400, 'invalid_mode', `mode must be one of ${CHAT_MODES.join(', ')}`);
       let roundId = null;
@@ -79,12 +172,12 @@ export function createApp({ kb, provider, sessions, runner, problems, progress, 
         roundId = Number(body.round);
         if (!interview.rounds.some((r) => r.id === roundId)) throw new HttpError(400, 'invalid_round', 'Unknown interview round');
       }
-      const session = sessions.create({ mode, roundId });
-      sendJson(res, 201, { id: session.id, mode: session.mode, round: session.roundId });
+      const session = sessions.create({ mode, roundId, userId: user.id });
+      sendJson(ctx.res, 201, { id: session.id, mode: session.mode, round: session.roundId });
     })
-    .get('/api/sessions/:id', ({ res, params }) => {
-      const session = getSession(params.id);
-      sendJson(res, 200, {
+    .get('/api/sessions/:id', (ctx) => {
+      const session = getSession(ctx.params.id, requireUser(ctx));
+      sendJson(ctx.res, 200, {
         id: session.id,
         mode: session.mode,
         round: session.roundId,
@@ -92,14 +185,20 @@ export function createApp({ kb, provider, sessions, runner, problems, progress, 
       });
     })
     .post('/api/sessions/:id/messages', async (ctx) => {
-      const session = getSession(ctx.params.id);
+      const user = requireUser(ctx);
+      const session = getSession(ctx.params.id, user);
       const text = requireString(await readJson(ctx.req), 'text', MAX_MESSAGE_CHARS);
       if (session.busy) throw new HttpError(409, 'busy', 'This session is already answering a message');
+      const llm = modelFor(ctx, user, session.mode);
 
       const round = session.mode === 'interview' ? interview.rounds.find((r) => r.id === session.roundId) : undefined;
       const config = {
         ask: { system: ASK_SYSTEM_PROMPT, tools, effort: 'low' },
-        interview: { system: INTERVIEW_SYSTEM_PROMPT, tools: interviewTools, effort: 'medium' },
+        interview: {
+          system: INTERVIEW_SYSTEM_PROMPT,
+          tools: createInterviewTools({ kb, provider: llm, progress, rubric: interview.rubric, userId: user.id }),
+          effort: 'medium',
+        },
         // Fresh build tools per turn: run_code counts runs per turn.
         build: { system: BUILD_SYSTEM_PROMPT, tools: createBuildTools({ kb, runner }), effort: 'high' },
       }[session.mode];
@@ -108,7 +207,7 @@ export function createApp({ kb, provider, sessions, runner, problems, progress, 
       try {
         await streamSse(ctx, async (sse, signal) => {
           const result = await runAgentTurn({
-            provider,
+            provider: llm,
             system: config.system,
             messages: session.messages,
             userText: text,
@@ -129,10 +228,14 @@ export function createApp({ kb, provider, sessions, runner, problems, progress, 
     })
 
     // ---- Progress -------------------------------------------------------
-    .get('/api/progress', ({ res }) => sendJson(res, 200, progress.summary(userId, { allTopics: kb.topics() })))
+    .get('/api/progress', (ctx) =>
+      sendJson(ctx.res, 200, progress.summary(requireUser(ctx).id, { allTopics: kb.topics() })),
+    )
 
     // ---- Code mode ------------------------------------------------------
-    .get('/api/problems', ({ res, url }) => {
+    .get('/api/problems', (ctx) => {
+      requireUser(ctx);
+      const { res, url } = ctx;
       const topic = url.searchParams.get('topic') || undefined;
       const list = problems.list({ topic }).map(({ id, title, topic: t, difficulty, createdAt }) => ({
         id,
@@ -143,8 +246,12 @@ export function createApp({ kb, provider, sessions, runner, problems, progress, 
       }));
       sendJson(res, 200, { problems: list });
     })
-    .get('/api/problems/:id', ({ res, params }) => sendJson(res, 200, publicProblem(getProblem(params.id))))
+    .get('/api/problems/:id', (ctx) => {
+      requireUser(ctx);
+      sendJson(ctx.res, 200, publicProblem(getProblem(ctx.params.id)));
+    })
     .post('/api/problems', async (ctx) => {
+      const user = requireUser(ctx);
       const body = (await readJson(ctx.req)) ?? {};
       const topic = normalizeTopic(body.topic);
       const difficulty = body.difficulty ?? 'medium';
@@ -154,11 +261,12 @@ export function createApp({ kb, provider, sessions, runner, problems, progress, 
       if (generationsInFlight >= MAX_CONCURRENT_GENERATIONS) {
         throw new HttpError(429, 'busy', 'Other problems are being generated right now. Try again in a minute.');
       }
+      const llm = modelFor(ctx, user, 'generate');
       generationsInFlight++;
       try {
         await streamSse(ctx, async (sse, signal) => {
           const problem = await generateProblem({
-            provider,
+            provider: llm,
             runner,
             store: problems,
             kb,
@@ -174,21 +282,25 @@ export function createApp({ kb, provider, sessions, runner, problems, progress, 
         generationsInFlight--;
       }
     })
-    .post('/api/problems/:id/run', async ({ req, res, params }) => {
-      const problem = getProblem(params.id);
-      const code = requireString(await readJson(req), 'code', MAX_CODE_CHARS, { trim: false });
-      const result = await runner.run({ code, tests: problem.visibleTests });
-      sendJson(res, 200, publicResult(problem, result));
-    })
-    .post('/api/problems/:id/submit', async (ctx) => {
+    .post('/api/problems/:id/run', async (ctx) => {
+      const user = requireUser(ctx);
+      limit(ctx, `run:${user.id}`, 30, 60_000);
       const problem = getProblem(ctx.params.id);
       const code = requireString(await readJson(ctx.req), 'code', MAX_CODE_CHARS, { trim: false });
+      const result = await runner.run({ code, tests: problem.visibleTests });
+      sendJson(ctx.res, 200, publicResult(problem, result));
+    })
+    .post('/api/problems/:id/submit', async (ctx) => {
+      const user = requireUser(ctx);
+      const problem = getProblem(ctx.params.id);
+      const code = requireString(await readJson(ctx.req), 'code', MAX_CODE_CHARS, { trim: false });
+      const llm = modelFor(ctx, user, 'review');
       await streamSse(ctx, async (sse, signal) => {
         const result = await runner.run({ code, tests: [...problem.visibleTests, ...problem.hiddenTests] }, { signal });
         sse.send('result', publicResult(problem, result));
         // A submission counts toward the topic's progress: share of tests passed, 1-10.
         progress.record({
-          userId,
+          userId: user.id,
           kind: 'code',
           topic: problem.topic,
           score: Math.max(1, Math.round((10 * result.passed) / Math.max(1, result.total))),
@@ -196,7 +308,7 @@ export function createApp({ kb, provider, sessions, runner, problems, progress, 
           feedback: `${result.passed}/${result.total} tests passed`,
         });
         const review = await reviewSubmission({
-          provider,
+          provider: llm,
           problem,
           code,
           result,
@@ -241,11 +353,113 @@ export function createApp({ kb, provider, sessions, runner, problems, progress, 
     }
   }
 
-  /** @param {string} id */
-  function getSession(id) {
+  /** Someone else's session looks exactly like a missing one. @param {string} id @param {{ id: string }} user */
+  function getSession(id, user) {
     const session = sessions.get(id);
-    if (!session) throw new HttpError(404, 'session_not_found', 'Session not found or expired');
+    if (!session || session.userId !== user.id) throw new HttpError(404, 'session_not_found', 'Session not found or expired');
     return session;
+  }
+
+  /**
+   * The model to use for this user's request, after rate and demo limits.
+   * Single-user mode: the server's provider. With accounts: the user's own
+   * key if they added one, otherwise the demo tier on the owner's key.
+   * Either way it's metered, so usage is recorded for every model call.
+   * @param {Context} ctx
+   * @param {{ id: string }} user
+   * @param {string} feature 'ask' | 'interview' | 'build' | 'generate' | 'review'
+   */
+  function modelFor(ctx, user, feature) {
+    limit(ctx, `model:${user.id}`, 20, 60_000);
+    if (!accounts) return provider;
+    const { store, usage, providerFor, demoProvider } = accounts;
+
+    const key = store.getApiKey(user.id);
+    if (key) {
+      usage.countRequest(user.id, 'own');
+      return withMetering(providerFor(key), (u) => usage.addTokens(user.id, 'own', u));
+    }
+    if (!demoProvider) throw new HttpError(402, 'key_required', 'Add your API key in Settings to use the AI features.');
+    if (DEMO_DISABLED.has(feature)) {
+      throw new HttpError(403, 'demo_feature', 'This feature needs your own API key. Add one in Settings.');
+    }
+    if (usage.today(user.id).demo.requests >= limits.demoMessagesPerUser) {
+      throw new HttpError(
+        429,
+        'demo_limit',
+        `The free demo allows ${limits.demoMessagesPerUser} messages a day. Add your own API key in Settings to keep going.`,
+      );
+    }
+    if (usage.demoTokensToday() >= limits.demoDailyTokens) {
+      throw new HttpError(429, 'demo_exhausted', 'The free demo is used up for today. Add your own API key in Settings, or come back tomorrow.');
+    }
+    usage.countRequest(user.id, 'demo');
+    return withMetering(demoProvider, (u) => usage.addTokens(user.id, 'demo', u));
+  }
+
+  function requireAccounts() {
+    if (!accounts) throw new HttpError(404, 'accounts_disabled', 'Accounts are not enabled on this server.');
+    return accounts;
+  }
+
+  /** @param {Context} ctx */
+  function requireUser(ctx) {
+    if (!ctx.user) throw new HttpError(401, 'unauthenticated', 'Log in first.');
+    return ctx.user;
+  }
+
+  /** @param {Context} ctx @param {string} key @param {number} max @param {number} windowMs */
+  function limit(ctx, key, max, windowMs) {
+    const result = limiter.hit(key, max, windowMs);
+    if (!result.ok) {
+      ctx.res.setHeader('Retry-After', String(result.retryAfterSec));
+      throw new HttpError(429, 'too_many_requests', `Too many requests. Try again in ${result.retryAfterSec} s.`);
+    }
+  }
+
+  /** Behind a reverse proxy (Caddy) the client IP is in X-Forwarded-For. @param {Context} ctx */
+  function clientIp(ctx) {
+    const forwarded = ctx.req.headers['x-forwarded-for'];
+    if (trustProxy && typeof forwarded === 'string' && forwarded) return forwarded.split(',')[0].trim();
+    return ctx.req.socket.remoteAddress ?? 'unknown';
+  }
+
+  /** @param {string} value @param {number} maxAge seconds; 0 deletes the cookie */
+  function sessionCookie(value, maxAge) {
+    return [`${SESSION_COOKIE}=${value}`, 'Path=/', 'HttpOnly', 'SameSite=Lax', `Max-Age=${maxAge}`, ...(accounts?.cookieSecure ? ['Secure'] : [])].join(
+      '; ',
+    );
+  }
+
+  /** @param {Context} ctx @param {string} token */
+  function setSessionCookie(ctx, token) {
+    ctx.res.setHeader('Set-Cookie', sessionCookie(token, SESSION_MAX_AGE));
+  }
+
+  /** What the UI needs to know about the current user. Never includes key material. @param {Context} ctx */
+  function describeMe(ctx) {
+    if (!accounts) return { accounts: false, user: ctx.user, tier: 'own' };
+    if (!ctx.user) return { accounts: true, user: null };
+    const keys = accounts.store.listKeys(ctx.user.id);
+    const usage = accounts.usage.today(ctx.user.id);
+    return {
+      accounts: true,
+      user: ctx.user,
+      keys,
+      tier: keys.length ? 'own' : accounts.demoProvider ? 'demo' : 'none',
+      usage,
+      demo: {
+        messagesPerDay: limits.demoMessagesPerUser,
+        messagesLeft: Math.max(0, limits.demoMessagesPerUser - usage.demo.requests),
+        disabledFeatures: [...DEMO_DISABLED],
+      },
+    };
+  }
+
+  /** Who is calling: from the session cookie, or the single local user. @param {Context} ctx */
+  async function authenticate(ctx, next) {
+    ctx.user = accounts ? accounts.store.resolveSession(readCookie(ctx.req, SESSION_COOKIE)) : LOCAL_USER;
+    await next();
   }
 
   /** @param {string} id */
@@ -259,6 +473,8 @@ export function createApp({ kb, provider, sessions, runner, problems, progress, 
     requestContext(log),
     securityHeaders,
     errorHandler,
+    originCheck,
+    authenticate,
     router.middleware(),
     ...(staticDir ? [serveStatic(staticDir)] : []),
     notFound,
@@ -274,6 +490,7 @@ export function createApp({ kb, provider, sessions, runner, problems, progress, 
       params: {},
       requestId: '',
       log: () => {},
+      user: null,
     };
     handle(ctx).catch((err) => {
       // errorHandler catches everything; this is a last resort.
@@ -347,6 +564,8 @@ async function errorHandler(/** @type {Context} */ ctx, next) {
     }
     if (err instanceof HttpError) {
       sendJson(ctx.res, err.status, { error: { code: err.code, message: err.message } });
+    } else if (err instanceof AccountError) {
+      sendJson(ctx.res, err.code === 'email_taken' ? 409 : 400, { error: { code: err.code, message: err.message } });
     } else if (err instanceof RangeError) {
       sendJson(ctx.res, 400, { error: { code: 'bad_request', message: err.message } });
     } else {
@@ -354,6 +573,54 @@ async function errorHandler(/** @type {Context} */ ctx, next) {
       sendJson(ctx.res, 500, { error: { code: 'internal', message: 'Internal error' } });
     }
   }
+}
+
+/**
+ * CSRF defence: browsers send an Origin header on cross-site POSTs. A
+ * state-changing request whose Origin isn't this host is refused. (Plus
+ * SameSite=Lax cookies, and JSON-only bodies which a plain HTML form can't send.)
+ */
+async function originCheck(/** @type {Context} */ ctx, next) {
+  const origin = ctx.req.headers.origin;
+  if (origin && !['GET', 'HEAD', 'OPTIONS'].includes(ctx.req.method ?? 'GET')) {
+    let host = null;
+    try {
+      host = new URL(origin).host;
+    } catch {
+      // malformed Origin: treated as foreign
+    }
+    if (host !== ctx.req.headers.host) throw new HttpError(403, 'bad_origin', 'Cross-site request blocked.');
+  }
+  await next();
+}
+
+/** @param {import('node:http').IncomingMessage} req @param {string} name */
+function readCookie(req, name) {
+  for (const part of (req.headers.cookie ?? '').split(';')) {
+    const [key, ...rest] = part.trim().split('=');
+    if (key === name) return rest.join('=') || undefined;
+  }
+  return undefined;
+}
+
+const SECRET_FIELDS = /^(password|apiKey|api_key|authorization|cookie|token)$/i;
+const SECRET_VALUES = /\bsk-[A-Za-z0-9_-]{8,}/g;
+
+/**
+ * Remove secrets from a log entry: fields with secret names, and anything
+ * that looks like an API key inside any string (e.g. an echoed error message).
+ * @param {unknown} value
+ * @param {string} [key]
+ * @returns {any}
+ */
+export function redact(value, key = '') {
+  if (SECRET_FIELDS.test(key)) return '[redacted]';
+  if (typeof value === 'string') return value.replace(SECRET_VALUES, '[redacted]');
+  if (Array.isArray(value)) return value.map((v) => redact(v));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, redact(v, k)]));
+  }
+  return value;
 }
 
 async function notFound(/** @type {Context} */ ctx) {

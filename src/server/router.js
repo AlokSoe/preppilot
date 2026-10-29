@@ -21,6 +21,11 @@ export class Router {
     return this.#add('POST', pattern, handler);
   }
 
+  /** @param {string} pattern @param {Handler} handler */
+  delete(pattern, handler) {
+    return this.#add('DELETE', pattern, handler);
+  }
+
   #add(method, pattern, handler) {
     const keys = [];
     const source = pattern.replace(/\/:([A-Za-z_]\w*)/g, (_, key) => {
