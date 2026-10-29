@@ -46,7 +46,7 @@ Full design: [docs/system-design.md](docs/system-design.md).
 Requires **Node.js 26+** and an Anthropic API key.
 
 ```bash
-git clone https://github.com/<your-github-user>/preppilot.git && cd preppilot
+git clone https://github.com/AlokSoe/preppilot.git && cd preppilot
 npm install
 npx preppilot init --notes ~/path/to/your/notes      # one or more folders, comma-separated
 export ANTHROPIC_API_KEY=sk-ant-...

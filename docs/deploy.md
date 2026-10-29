@@ -46,11 +46,11 @@ sudo usermod -aG docker $USER && newgrp docker
 ## 5. Get the code and your notes
 
 ```bash
-git clone https://github.com/<your-github-user>/preppilot.git
+git clone https://github.com/AlokSoe/preppilot.git
 cd preppilot
 mkdir notes
-git clone https://github.com/<your-github-user>/machine-coding-js.git notes/machine-coding-js
-git clone https://github.com/<your-github-user>/javascript-engineering-handbook.git notes/javascript-engineering-handbook
+git clone https://github.com/AlokSoe/machine-coding-js.git notes/machine-coding-js
+git clone https://github.com/AlokSoe/javascript-engineering-handbook.git notes/javascript-engineering-handbook
 ```
 
 ## 6. Configure
