@@ -1,94 +1,82 @@
 # Deploying PrepPilot for free (Oracle Cloud Always Free)
 
-This puts PrepPilot on a public HTTPS URL at no hosting cost: an Oracle Cloud "Always Free" VM
-running Docker Compose with three containers — Caddy (HTTPS), the API, and the isolated code runner.
+Result: PrepPilot on your own HTTPS address, running on an Oracle Cloud "Always Free" VM with
+three containers — Caddy (HTTPS), the API, and the isolated code runner. Your note repos stay
+**private**: the server reads them with read-only deploy keys.
 
-> Free-tier terms change. Check Oracle's current Always Free limits before you start. Model usage is
-> **not** free: the demo tier spends your Anthropic credit (capped by `DEMO_DAILY_TOKENS`), and users
-> with their own key spend theirs.
+**The server holds no API key.** The free demo tier is off, and every user signs up and adds their
+own key in **Settings** (a free Gemini key from https://aistudio.google.com works).
 
-## 1. Create the VM
+Time: about 30–45 minutes, mostly in Oracle's console. Free-tier terms change, so check Oracle's
+current Always Free limits as you go.
 
-1. Sign up at cloud.oracle.com (a card is needed for verification; Always Free resources aren't charged).
-2. **Compute → Instances → Create instance**
-   - Image: **Ubuntu 24.04**
-   - Shape: **Ampere (VM.Standard.A1.Flex)**, 1–2 OCPU, 6–12 GB RAM (inside the free allowance)
-   - Add your SSH public key.
-3. Note the instance's **public IP**.
+## 1. Create the VM (Oracle console)
 
-## 2. Open ports 80 and 443
+1. Sign up at **cloud.oracle.com**. A card is needed for identity verification; Always Free
+   resources aren't charged.
+2. **Menu → Compute → Instances → Create instance**
+   - **Image:** Canonical **Ubuntu 24.04**
+   - **Shape:** Ampere **VM.Standard.A1.Flex**, 1 OCPU, 6 GB memory (inside the free allowance).
+     If Ampere says "out of capacity", try another availability domain or try again later.
+   - **SSH keys:** choose *Paste public key* and paste the output of this command from your Mac:
+     ```bash
+     cat ~/.ssh/id_ed25519.pub || (ssh-keygen -t ed25519 -N "" -f ~/.ssh/id_ed25519 && cat ~/.ssh/id_ed25519.pub)
+     ```
+3. Create it, wait until it's **Running**, and copy its **Public IP address**.
 
-Two firewalls need it:
+## 2. Open ports 80 and 443 (Oracle console)
 
-- **Oracle network:** Instance → Subnet → Security List → *Add Ingress Rules*: source `0.0.0.0/0`,
-  TCP, destination ports `80` and `443`.
-- **On the VM** (Oracle's Ubuntu images ship with strict iptables rules):
-  ```bash
-  sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport 80 -j ACCEPT
-  sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport 443 -j ACCEPT
-  sudo netfilter-persistent save
-  ```
+Instance page → **Primary VNIC → Subnet → Security Lists → Default Security List → Add Ingress Rules**:
 
-## 3. Point a domain at it
+| Source CIDR | IP protocol | Destination port |
+|---|---|---|
+| `0.0.0.0/0` | TCP | `80` |
+| `0.0.0.0/0` | TCP | `443` |
 
-Caddy needs a domain name to get an HTTPS certificate. Any of:
-- your own domain: an `A` record → the VM's public IP, or
-- a free subdomain from a dynamic-DNS service (e.g. DuckDNS) pointing at the IP.
+(The VM's own firewall is opened by the setup script.)
 
-## 4. Install Docker
+## 3. Get a free domain name
 
+HTTPS needs a domain. Free option: **https://www.duckdns.org** → sign in → create a subdomain
+(e.g. `preppilot-kumar`) → set its **current ip** to the VM's public IP → **update ip**.
+Your address is then `preppilot-kumar.duckdns.org`.
+
+## 4. Run the setup script on the VM
+
+From your Mac:
 ```bash
 ssh ubuntu@<public-ip>
-curl -fsSL https://get.docker.com | sh
-sudo usermod -aG docker $USER && newgrp docker
+curl -fsSL https://raw.githubusercontent.com/AlokSoe/preppilot/main/scripts/setup-server.sh -o setup.sh
+bash setup.sh preppilot-kumar.duckdns.org
 ```
 
-## 5. Get the code and your notes
+Partway through, the script prints **two deploy keys**, one per note repo, each with a GitHub link.
+For each one: open the link, title it `preppilot-server`, paste the key, leave **Allow write access
+unchecked**, and click **Add key**. Then press Enter in the terminal.
 
-```bash
-git clone https://github.com/AlokSoe/preppilot.git
-cd preppilot
-mkdir notes
-git clone https://github.com/AlokSoe/machine-coding-js.git notes/machine-coding-js
-git clone https://github.com/AlokSoe/javascript-engineering-handbook.git notes/javascript-engineering-handbook
-```
-
-## 6. Configure
-
-```bash
-cp .env.example .env
-nano .env
-```
-- `DOMAIN` — your domain from step 3
-- `ANTHROPIC_API_KEY` — powers the free demo tier (leave empty to require users' own keys)
-- `KEY_ENCRYPTION_SECRET` — `openssl rand -hex 32`
-- `RUNNER_TOKEN` — `openssl rand -hex 24`
-
-**Keep `KEY_ENCRYPTION_SECRET` safe.** If you lose it, stored user keys can't be decrypted
-(users would just re-enter them).
-
-## 7. Start
-
-```bash
-docker compose up -d --build
-docker compose logs -f api      # look for "listening" with "auth":"accounts"
-```
-
-Open `https://<your-domain>` and create an account.
+When it finishes, open `https://<your-domain>` (allow a minute or two for the HTTPS certificate),
+create an account, and add your API key in **Settings**.
 
 ## Operating it
 
+Run these on the VM, in `~/preppilot`:
+
 | Task | Command |
 |---|---|
-| Update to the latest code | `git pull && docker compose up -d --build` |
-| Update your notes | `git -C notes/machine-coding-js pull && docker compose restart api` |
-| Logs | `docker compose logs -f api` (JSON lines; secrets are redacted) |
-| Back up the database | `docker compose exec api node -e "new (require('node:sqlite').DatabaseSync)('/data/preppilot.db').exec(\"VACUUM INTO '/data/backup.db'\")"` then copy it off the VM with `docker compose cp api:/data/backup.db .` |
-| Restart | `docker compose restart` |
+| Update PrepPilot | `git pull && sudo docker compose up -d --build` |
+| Update your notes | `git -C notes/machine-coding-js pull && git -C notes/javascript-engineering-handbook pull && sudo docker compose restart api` |
+| Logs | `sudo docker compose logs -f api` (JSON lines; secrets are redacted) |
+| Restart | `sudo docker compose restart` |
+| Back up the database | `sudo docker compose exec api node -e "new (require('node:sqlite').DatabaseSync)('/data/preppilot.db').exec(\"VACUUM INTO '/data/backup.db'\")" && sudo docker compose cp api:/data/backup.db .` |
 
-## Fallback: Render free tier
+**Keep `.env` safe** (it's created with owner-only permissions). If `KEY_ENCRYPTION_SECRET` is lost,
+stored user keys can't be decrypted; users just re-enter them.
 
-For a quick demo without a VM: deploy the Dockerfile as a Render web service with `AUTH` unset
-(single-user) or set. Limits: the service sleeps when idle (slow first request), there's no
-persistent disk on the free tier (the SQLite data resets on redeploy), and there's no separate
-runner container — code runs in the API container, protected by Node's permission model only.
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| Browser can't reach the site | Check step 2's ingress rules, and that DuckDNS points at the current IP. |
+| Certificate errors right after setup | Wait 1–2 minutes; check `sudo docker compose logs caddy`. |
+| Deploy-key clone fails | The key must be added to the matching repo (each repo has its own key). Re-run `bash setup.sh <domain>`; it resumes. |
+| "Add your API key" for every request | Expected: open Settings and add your own key. |

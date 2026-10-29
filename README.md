@@ -89,8 +89,9 @@ are used.
 
 ## Deploying
 
-Free hosting on an Oracle Cloud Always Free VM with Docker Compose and automatic HTTPS:
-see [docs/deploy.md](docs/deploy.md).
+Free hosting on an Oracle Cloud Always Free VM with Docker Compose and automatic HTTPS. One script
+does the server setup (`scripts/setup-server.sh`), including private note repos via read-only deploy
+keys; the server holds no API key, users add their own. See [docs/deploy.md](docs/deploy.md).
 
 ```bash
 cp .env.example .env   # fill it in
