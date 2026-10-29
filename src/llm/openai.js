@@ -17,7 +17,9 @@ import {
 // Defaults as of 2026-10; providers rename models often, so check their live
 // model lists and override with OPENAI_MODEL / GEMINI_MODEL.
 export const DEFAULT_OPENAI_MODEL = 'gpt-5.5';
-export const DEFAULT_GEMINI_MODEL = 'gemini-3.1-pro-preview';
+// Free tier: as of 2026-10 a new free key could run gemini-3.1-flash-lite, while
+// gemini-flash-latest and gemini-3.8-flash hung without replying.
+export const DEFAULT_GEMINI_MODEL = 'gemini-3.1-flash-lite';
 export const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai/';
 
 /** @type {Record<string, Turn['stopReason']>} */
@@ -50,8 +52,9 @@ export class OpenAICompatibleProvider {
    */
   async *streamTurn({ system, messages, tools, effort = 'medium', signal }) {
     let text = '';
-    /** @type {Map<number, { id: string, name: string, args: string }>} tool calls arrive in pieces, keyed by index */
+    /** @type {Map<number, { id: string, name: string, args: string, extra?: unknown }>} tool calls arrive in pieces, keyed by index */
     const calls = new Map();
+    let lastIndex = -1;
     let finish = 'stop';
     let usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 
@@ -59,7 +62,7 @@ export class OpenAICompatibleProvider {
       const stream = await this.client.chat.completions.create(
         {
           model: this.model,
-          messages: toOpenAIMessages(system, messages),
+          messages: toOpenAIMessages(system, messages, this.name),
           ...(tools.length > 0 && { tools: tools.map(toOpenAITool) }),
           ...(this.sendEffort && { reasoning_effort: effort }),
           stream: true,
@@ -74,11 +77,17 @@ export class OpenAICompatibleProvider {
           yield { type: 'text', delta: choice.delta.content };
         }
         for (const part of choice?.delta?.tool_calls ?? []) {
-          const call = calls.get(part.index) ?? { id: '', name: '', args: '' };
+          // OpenAI numbers the pieces with `index`; Gemini's compatible endpoint
+          // omits it and sends each call whole, so a new id means a new call.
+          const index = part.index ?? (part.id || lastIndex < 0 ? lastIndex + 1 : lastIndex);
+          lastIndex = Math.max(lastIndex, index);
+          const call = calls.get(index) ?? { id: '', name: '', args: '' };
           if (part.id) call.id = part.id;
           if (part.function?.name) call.name += part.function.name;
           if (part.function?.arguments) call.args += part.function.arguments;
-          calls.set(part.index, call);
+          // Gemini 3 attaches a thought signature that must be sent back unchanged.
+          if (part.extra_content) call.extra = part.extra_content;
+          calls.set(index, call);
         }
         if (choice?.finish_reason) finish = choice.finish_reason;
         if (chunk.usage) usage = fromOpenAIUsage(chunk.usage);
@@ -89,7 +98,8 @@ export class OpenAICompatibleProvider {
 
     /** @type {import('./provider.js').Block[]} */
     const content = text ? [{ type: 'text', text }] : [];
-    for (const call of [...calls.entries()].sort(([a], [b]) => a - b).map(([, c]) => c)) {
+    const ordered = [...calls.entries()].sort(([a], [b]) => a - b).map(([, c]) => c);
+    for (const call of ordered) {
       let input;
       try {
         input = call.args ? JSON.parse(call.args) : {};
@@ -99,7 +109,27 @@ export class OpenAICompatibleProvider {
       }
       content.push({ type: 'tool_call', id: call.id, name: call.name, input });
     }
-    return { content, stopReason: STOP_REASONS[finish] ?? 'end', usage };
+    // Gemini reports finish_reason "stop" even when it called tools; the
+    // presence of tool calls is what counts.
+    const stopReason = ordered.length && finish !== 'length' ? 'tool_calls' : (STOP_REASONS[finish] ?? 'end');
+    // The exact assistant message, so provider-specific fields (Gemini's
+    // thought signatures) go back unchanged on the next request.
+    const raw = {
+      provider: this.name,
+      content: {
+        role: 'assistant',
+        content: text || null,
+        ...(ordered.length > 0 && {
+          tool_calls: ordered.map((c) => ({
+            id: c.id,
+            type: 'function',
+            function: { name: c.name, arguments: c.args || '{}' },
+            ...(c.extra !== undefined && { extra_content: c.extra }),
+          })),
+        }),
+      },
+    };
+    return { content, stopReason, usage, raw };
   }
 
   /**
@@ -113,7 +143,7 @@ export class OpenAICompatibleProvider {
       completion = await this.client.chat.completions.create(
         {
           model: this.model,
-          messages: toOpenAIMessages(system, messages),
+          messages: toOpenAIMessages(system, messages, this.name),
           ...(this.sendEffort && { reasoning_effort: effort }),
           response_format: { type: 'json_schema', json_schema: { name: 'result', schema: toApiSchema(schema), strict: true } },
         },
@@ -155,14 +185,20 @@ export function toOpenAITool(tool) {
 /**
  * Neutral history → Chat Completions messages. Tool results become one
  * `role: "tool"` message each, right after the assistant message that asked.
+ * Assistant turns this provider produced are sent back exactly as received.
  * @param {string} system
  * @param {Message[]} messages
+ * @param {string} [providerName]
  */
-export function toOpenAIMessages(system, messages) {
+export function toOpenAIMessages(system, messages, providerName) {
   /** @type {any[]} */
   const out = system ? [{ role: 'system', content: system }] : [];
   for (const message of messages) {
     const text = message.content.flatMap((b) => (b.type === 'text' ? [b.text] : [])).join('\n\n');
+    if (message.role === 'assistant' && providerName && message.raw?.provider === providerName) {
+      out.push(message.raw.content);
+      continue;
+    }
     if (message.role === 'assistant') {
       const toolCalls = message.content.flatMap((b) =>
         b.type === 'tool_call'

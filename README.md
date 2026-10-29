@@ -61,7 +61,7 @@ Claude gives the best results but its API is paid. Two free alternatives:
 # Easiest: put these in a .env file in the project (git-ignored); npm start and npm run cli read it.
 # Google Gemini free tier: key from https://aistudio.google.com (no card). Free tier = Flash models only,
 # small daily limits, and Google may use free-tier data to improve its products.
-export PREPPILOT_PROVIDER=gemini GEMINI_API_KEY=... GEMINI_MODEL=gemini-flash-latest
+export PREPPILOT_PROVIDER=gemini GEMINI_API_KEY=... GEMINI_MODEL=gemini-3.1-flash-lite
 
 # Fully local and private with Ollama (https://ollama.com): free, quality depends on the model.
 ollama pull qwen3:8b
@@ -110,7 +110,7 @@ docker compose up -d --build
 | `DEMO_MESSAGES_PER_USER`, `DEMO_DAILY_TOKENS` | Demo tier limits. |
 | `PREPPILOT_PROVIDER` | `claude` (default), `gemini` or `openai` (also any OpenAI-compatible server via `OPENAI_BASE_URL`, e.g. Ollama). |
 | `PREPPILOT_MODEL` | Claude model override (default `claude-opus-5-5`). |
-| `OPENAI_MODEL`, `GEMINI_MODEL` | Models for users who bring an OpenAI or Gemini key (defaults `gpt-5.5`, `gemini-3.1-pro-preview`; check the providers' current model lists). |
+| `OPENAI_MODEL`, `GEMINI_MODEL` | Models for users who bring an OpenAI or Gemini key (defaults `gpt-5.5`, `gemini-3.1-flash-lite`; check the providers' current model lists). |
 | `TRUST_PROXY=true` | Behind Caddy or nginx: read the client IP from `X-Forwarded-For`. |
 
 ## Development

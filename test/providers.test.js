@@ -266,3 +266,45 @@ test('Gemini: a bad key comes back as HTTP 400, still mapped to InvalidKeyError'
   });
   await assert.rejects(provider.validateKey(), InvalidKeyError);
 });
+
+test('Gemini quirks: tool call without index, finish_reason "stop", thought signature echoed back', async () => {
+  const requests = [];
+  const turns = [
+    [
+      {
+        choices: [{ index: 0, delta: { role: 'assistant', tool_calls: [{ id: 'call_9', type: 'function', extra_content: { google: { thought_signature: 'SIG' } }, function: { name: 'search_notes', arguments: '{"query":"closure"}' } }] } }],
+      },
+      { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 3 } },
+    ],
+    [
+      { choices: [{ index: 0, delta: { content: 'Done.' } }] },
+      { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 9, completion_tokens: 2 } },
+    ],
+  ];
+  const client = {
+    chat: {
+      completions: {
+        async create(params) {
+          requests.push(structuredClone(params));
+          const chunks = turns.shift();
+          return (async function* () {
+            yield* chunks;
+          })();
+        },
+      },
+    },
+  };
+  const provider = new OpenAICompatibleProvider({ name: 'gemini', model: 'm', sendEffort: false, client: /** @type {any} */ (client) });
+  const result = await runAgentTurn({
+    provider,
+    system: 's',
+    messages: [],
+    userText: 'q',
+    tools: [{ ...TOOL, run: () => 'notes' }],
+  });
+  assert.equal(result.status, 'done');
+  assert.equal(result.text, 'Done.');
+  const echoed = requests[1].messages.find((m) => m.role === 'assistant');
+  assert.deepEqual(echoed.tool_calls[0].extra_content, { google: { thought_signature: 'SIG' } });
+  assert.equal(requests[1].reasoning_effort, undefined);
+});
