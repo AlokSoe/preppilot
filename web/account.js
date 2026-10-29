@@ -118,13 +118,18 @@ export async function showSettings(root) {
     );
   }
   const form = /** @type {HTMLFormElement} */ (el('form', 'key-form'));
-  const keyField = field('apiKey', me.keys.length ? 'Replace with a new key' : 'Anthropic API key', 'password', 'off');
-  keyField.input.placeholder = 'sk-ant-…';
+  const providerSelect = /** @type {HTMLSelectElement} */ (el('select'));
+  providerSelect.name = 'provider';
+  for (const [value, label] of Object.entries(PROVIDERS)) providerSelect.append(new Option(label, value));
+  const providerLabelEl = el('label', 'field');
+  providerLabelEl.append(el('span', '', 'Provider'), providerSelect);
+  const keyField = field('apiKey', me.keys.length ? 'Add or replace a key' : 'API key', 'password', 'off');
+  keyField.input.placeholder = 'Paste your key';
   const save = el('button', '', 'Check and save');
   save.type = 'submit';
   const status = el('p', 'note');
   status.setAttribute('role', 'status');
-  form.append(keyField.label, save, status);
+  form.append(providerLabelEl, keyField.label, save, status);
   form.addEventListener('submit', async (event) => {
     event.preventDefault();
     save.disabled = true;
@@ -133,7 +138,7 @@ export async function showSettings(root) {
       const res = await fetch('/api/keys', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider: 'claude', apiKey: keyField.input.value }),
+        body: JSON.stringify({ provider: providerSelect.value, apiKey: keyField.input.value }),
       });
       keyField.input.value = ''; // never keep the key in the page longer than needed
       if (res.ok) return showSettings(root);
@@ -176,8 +181,10 @@ export async function showSettings(root) {
   root.replaceChildren(...nodes);
 }
 
+const PROVIDERS = { claude: 'Anthropic (Claude) — recommended', openai: 'OpenAI', gemini: 'Google Gemini' };
+
 function providerLabel(provider) {
-  return { claude: 'Anthropic (Claude)' }[provider] ?? provider;
+  return PROVIDERS[provider]?.replace(' — recommended', '') ?? provider;
 }
 
 /** A labelled input. */

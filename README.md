@@ -38,7 +38,7 @@ Available as a **web app** and a **CLI** (`npx preppilot`).
 - **Accounts** (optional): scrypt passwords, HttpOnly cookies, users' API keys encrypted with
   AES-256-GCM, a demo tier with daily caps, rate limits, CSRF Origin checks and log redaction.
 
-One runtime dependency (`@anthropic-ai/sdk`); everything else is Node built-ins.
+Runtime dependencies are only the official provider SDKs (`@anthropic-ai/sdk`, `openai`); everything else is Node built-ins. Users can bring a Claude, OpenAI or Gemini key (Gemini through Google's OpenAI-compatible endpoint).
 Full design: [docs/system-design.md](docs/system-design.md).
 
 ## Quick start (local, single user)
@@ -91,7 +91,8 @@ docker compose up -d --build
 | `DATABASE_PATH` | SQLite file (default `~/.preppilot/preppilot.db`). |
 | `RUNNER_URL`, `RUNNER_TOKEN` | Use the separate code-runner service. |
 | `DEMO_MESSAGES_PER_USER`, `DEMO_DAILY_TOKENS` | Demo tier limits. |
-| `PREPPILOT_MODEL` | Model override (default `claude-opus-5-5`). |
+| `PREPPILOT_MODEL` | Claude model override (default `claude-opus-5-5`). |
+| `OPENAI_MODEL`, `GEMINI_MODEL` | Models for users who bring an OpenAI or Gemini key (defaults `gpt-5.5`, `gemini-3.1-pro-preview`; check the providers' current model lists). |
 | `TRUST_PROXY=true` | Behind Caddy or nginx: read the client IP from `X-Forwarded-For`. |
 
 ## Development

@@ -347,3 +347,36 @@ Without `AUTH=accounts` it stays a single-user local app.
 ### Things I'd add next
 > Email verification and password reset; key rotation (re-encrypt with a new server secret); an admin
 > usage dashboard; Postgres + Redis when running more than one instance.
+
+---
+
+## M9 — More providers (OpenAI, Gemini)
+
+**What I built:** one `OpenAICompatibleProvider` adapter for the Chat Completions API that serves
+both OpenAI and Gemini (via Google's OpenAI-compatible endpoint), a provider picker in Settings, and a
+**contract test suite** that every adapter must pass: a full agent turn with a tool call round trip,
+streamed text, and summed usage — each against a fake client speaking that provider's wire format.
+
+### Questions you can expect
+
+**"What actually differs between providers?"**
+> Message shapes (Claude puts tool results inside a user message; OpenAI wants one `role: "tool"`
+> message per result), how tool-call arguments stream (OpenAI sends JSON fragments keyed by index that
+> I reassemble), stop reasons, usage fields (OpenAI counts cached tokens *inside* prompt tokens),
+> structured-output syntax, and error classes. Each adapter converts all of that to the same neutral
+> types, so the agent loop, tools, grader and UI didn't change at all.
+
+**"Why one adapter for two providers?"**
+> Gemini offers an OpenAI-compatible endpoint, so the only differences are base URL, key and model.
+> Less code, one set of tests. The trade-off: compatibility layers don't map every option — I leave
+> `reasoning_effort` out for Gemini rather than rely on how it's translated.
+
+**"How do you know a new adapter works without paying for API calls?"**
+> Contract tests: the same behavioural tests run against every adapter with a fake SDK client that
+> replays that provider's real wire format. Then a small live smoke test per provider before release.
+> (I haven't run the live OpenAI/Gemini checks yet — that needs keys for those providers.)
+
+**"Why not let users pick any model ID?"**
+> Model IDs aren't portable and change often, so each provider has a default in config
+> (`OPENAI_MODEL`, `GEMINI_MODEL`), and the Claude override doesn't leak into other providers — I
+> caught exactly that mistake in review.
