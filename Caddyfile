@@ -1,0 +1,8 @@
+# Automatic HTTPS (Let's Encrypt) for $DOMAIN, proxied to the API.
+{$DOMAIN} {
+	encode zstd gzip
+	reverse_proxy api:8080 {
+		# Stream SSE responses immediately instead of buffering them.
+		flush_interval -1
+	}
+}

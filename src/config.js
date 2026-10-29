@@ -11,20 +11,32 @@ function resolvePath(p) {
   return path.resolve(ROOT, p);
 }
 
-/** SQLite file. `DATABASE_PATH` overrides; default is ./data/preppilot.db in the project. */
+/** Per-user config written by `preppilot init`. */
+export const USER_CONFIG = path.join(homedir(), '.config', 'preppilot', 'config.json');
+
+/** SQLite file. `DATABASE_PATH` overrides; default ~/.preppilot/preppilot.db (works for npm installs too). */
 export function databasePath() {
-  return process.env.DATABASE_PATH ? resolvePath(process.env.DATABASE_PATH) : path.join(ROOT, 'data', 'preppilot.db');
+  return process.env.DATABASE_PATH ? resolvePath(process.env.DATABASE_PATH) : path.join(homedir(), '.preppilot', 'preppilot.db');
 }
 
 /**
- * Knowledge-base folders to index.
- * `PREPPILOT_SOURCES` (comma-separated) overrides `preppilot.config.json`.
+ * Knowledge-base folders to index, first match wins:
+ *   1. PREPPILOT_SOURCES env (comma-separated)
+ *   2. ./preppilot.config.json in the current directory
+ *   3. ~/.config/preppilot/config.json (written by `preppilot init`)
+ *   4. preppilot.config.json shipped in the project
  * @returns {Promise<string[]>} absolute paths
  */
 export async function loadSources() {
   if (process.env.PREPPILOT_SOURCES) {
     return process.env.PREPPILOT_SOURCES.split(',').map((s) => resolvePath(s.trim()));
   }
-  const raw = await readFile(path.join(ROOT, 'preppilot.config.json'), 'utf8');
-  return JSON.parse(raw).sources.map(resolvePath);
+  for (const file of [path.resolve('preppilot.config.json'), USER_CONFIG, path.join(ROOT, 'preppilot.config.json')]) {
+    try {
+      return JSON.parse(await readFile(file, 'utf8')).sources.map(resolvePath);
+    } catch {
+      // try the next location
+    }
+  }
+  throw new Error('No notes configured. Run: preppilot init --notes <folder>[,<folder>...]');
 }

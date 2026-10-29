@@ -26,6 +26,8 @@ Usage:
   preppilot code new [--topic promises] [--difficulty medium]   Generate a verified coding problem
   preppilot code list | run <id> <file> | submit <id> <file>     Practise it (submit = all tests + AI review)
   preppilot serve [--port 8080] [--host 127.0.0.1]          Start the web app
+  preppilot runner [--port 9000]                            Run the code-runner service (production, needs RUNNER_TOKEN)
+  preppilot init --notes <folder>[,<folder>]                Choose the note folders to learn from
   preppilot search "<query>" [--k 5] [--topic event-loop]   Search your notes (no AI)
   preppilot index                                           Show what gets indexed
   preppilot help
@@ -49,6 +51,7 @@ async function main() {
       host: { type: 'string' },
       difficulty: { type: 'string' },
       round: { type: 'string' },
+      notes: { type: 'string' },
     },
   });
   const [command, ...rest] = positionals;
@@ -85,6 +88,20 @@ async function main() {
     case 'code': {
       const { codeCommand } = await import('../src/cli/code.js');
       return codeCommand(rest, values);
+    }
+    case 'runner': {
+      const { startRunnerService } = await import('../src/runner/service.js');
+      await startRunnerService({
+        host: values.host ?? '0.0.0.0',
+        port: Number(values.port ?? 9000),
+        token: process.env.RUNNER_TOKEN ?? '',
+        concurrency: Number(process.env.RUNNER_CONCURRENCY ?? 4),
+      });
+      return;
+    }
+    case 'init': {
+      const { initConfig } = await import('../src/cli/init.js');
+      return initConfig(values.notes);
     }
     case 'serve': {
       const port = Number(values.port ?? process.env.PORT ?? 8080);

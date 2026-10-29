@@ -495,6 +495,13 @@ supported provider** (§9.8), and the owner of the deployment pays nothing for t
 
 ### 12.4 CLI distribution (npm)
 
+> **Changed during build (2026-10-30):** the CLI is **local-first**, not a thin client. It runs the
+> same agent, sandbox and SQLite store on the user's machine with their own `ANTHROPIC_API_KEY`, and
+> `preppilot init --notes <folders>` points it at their notes. No account, nothing leaves the machine
+> except model calls, and it works offline for search. The thin-client design below is kept for
+> reference; it would only be needed to sync progress between the CLI and the hosted web app.
+
+
 - Package name **`preppilot`** (available on npm as of 2026-10-28), so anyone can run `npx preppilot`.
 - The CLI is a **thin client**: it talks to the hosted API, so users don't need an API key or the notes.
   - `preppilot login` → opens a device-code style login; token stored in `~/.config/preppilot/`.
@@ -587,4 +594,5 @@ supported provider** (§9.8), and the owner of the deployment pays nothing for t
 | 2026-10-28 | Hosting | Free: Oracle Cloud Always Free VM + Docker Compose + Caddy; Render free as fallback (§12.1). Daily spend cap on model usage (§12.2). |
 | 2026-10-28 | Who pays for model usage? | Users bring their own API key (encrypted at rest, validated, never returned or logged). Small demo tier on the owner's key so visitors can try it first (§12.2). |
 | 2026-10-29 | Grading scale | 1–10 with five criteria, matching the rubric already in the notes (`28-mock-interview`), instead of the 1–5 scale first drafted. |
+| 2026-10-30 | CLI architecture | Local-first CLI with the user's own key and `preppilot init`, instead of a thin client over the hosted API (§12.4). |
 | 2026-10-28 | Which AI providers? | Any, via a provider interface (§9.8). Claude adapter first (M2); OpenAI and Gemini in M9 after the core works end to end. |

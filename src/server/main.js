@@ -6,6 +6,7 @@ import { KnowledgeBase } from '../search/knowledge-base.js';
 import { createProvider } from '../llm/index.js';
 import { openDatabase } from '../db/database.js';
 import { CodeRunner } from '../runner/runner.js';
+import { RemoteRunner } from '../runner/service.js';
 import { ProblemStore } from '../problems/store.js';
 import { ProgressStore } from '../progress/progress.js';
 import { loadRounds } from '../interview/rounds.js';
@@ -53,7 +54,10 @@ export async function startServer({ port = 8080, host = '127.0.0.1' } = {}) {
     accounts,
     trustProxy: env.TRUST_PROXY === 'true',
     sessions: new MemorySessionStore(),
-    runner: new CodeRunner({ concurrency: Number(process.env.RUNNER_CONCURRENCY ?? 4) }),
+    // Production: a separate, network-isolated runner container. Local: in-process pool.
+    runner: env.RUNNER_URL
+      ? new RemoteRunner({ url: env.RUNNER_URL, token: env.RUNNER_TOKEN ?? '' })
+      : new CodeRunner({ concurrency: Number(env.RUNNER_CONCURRENCY ?? 4) }),
     problems: new ProblemStore(db),
     progress: new ProgressStore(db),
     interview: await loadRounds(sources),

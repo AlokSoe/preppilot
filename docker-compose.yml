@@ -1,0 +1,62 @@
+# Production stack: Caddy (HTTPS) → api → runner.
+#   docker compose up -d --build
+# Needs a .env file (copy .env.example) and the note repos in ./notes.
+
+services:
+  caddy:
+    image: caddy:2
+    ports: ["80:80", "443:443"]
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [public]
+    depends_on: [api]
+    restart: unless-stopped
+
+  api:
+    build: .
+    env_file: .env
+    environment:
+      AUTH: accounts
+      DATABASE_PATH: /data/preppilot.db
+      PREPPILOT_SOURCES: /notes/machine-coding-js,/notes/javascript-engineering-handbook
+      RUNNER_URL: http://runner:9000
+      TRUST_PROXY: "true"
+    volumes:
+      - db:/data
+      - ./notes:/notes:ro
+    networks: [public, sandbox]
+    restart: unless-stopped
+
+  # Runs untrusted code. Defence in depth on top of Node's permission model:
+  # no internet (internal network), read-only root FS, no Linux capabilities,
+  # memory/process limits, and ONLY the runner token in its environment.
+  runner:
+    build: .
+    command: ["node", "bin/preppilot.js", "runner", "--host", "0.0.0.0", "--port", "9000"]
+    environment:
+      RUNNER_TOKEN: ${RUNNER_TOKEN}
+    networks: [sandbox]
+    read_only: true
+    tmpfs: [/tmp]
+    mem_limit: 512m
+    pids_limit: 128
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:9000/healthz').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 30s
+    restart: unless-stopped
+
+networks:
+  public: {}
+  sandbox:
+    internal: true # no route to the internet
+
+volumes:
+  db: {}
+  caddy_data: {}
+  caddy_config: {}
